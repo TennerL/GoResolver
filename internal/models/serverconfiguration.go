@@ -1,0 +1,46 @@
+package models 
+
+type ServerConfiguration struct {
+	ID int 
+	Server_Name string
+	Server_Port int
+	SSL_Enabled int
+	SSL_Redirect int
+	Proxy_Pass_Port int
+	Proxy_Intercept_Errors int
+	Proxy_Connect_Timeout int 
+	Proxy_Read_Timeout int
+	Proxy_Send_Timeout int
+	Websockets int
+	IP string
+	VPN_File []byte
+	Port int
+	ServerID string
+	Name string
+	Cert_Path string
+	Key_Path string
+	Cert_Issued string
+	Cert_Expiration string 
+}
+
+type ServerErrorPages struct {
+	ID           string
+	Server_ID    string
+	Site_ID      string
+	Server_Name  string
+	ErrorPage_ID string
+
+	Name         string
+	Enabled      bool
+	Is_Default   bool
+}
+
+type ServerErrorFiles struct {
+	ID           string
+	
+	Error_Code   string
+	ResponseType string
+	Filename     string
+	File 		 []byte
+	Path         string
+}

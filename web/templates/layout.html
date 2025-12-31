@@ -1,0 +1,105 @@
+{{ define "layout" }}
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GoResolver</title>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class'
+    }
+  </script>
+
+  <style>
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+
+<body class="min-h-screen flex text-gray-800 dark:text-gray-200
+             bg-gradient-to-b from-slate-50 to-slate-100
+             dark:from-slate-900 dark:to-slate-800">
+
+  <!-- Sidebar -->
+  <aside class="w-64 bg-white dark:bg-slate-900 shadow-lg hidden md:flex flex-col">
+    <div class="px-6 py-5 border-b border-gray-200 dark:border-slate-700">
+      <h1 class="text-xl font-semibold text-red-600">GoResolver</h1>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">System Dashboard</p>
+    </div>
+
+    <nav class="flex-1 px-4 py-6 space-y-2">
+
+      <a href="/"
+         class="block px-4 py-2 rounded-lg font-medium transition
+         {{ if eq .Active "dashboard" }}
+           bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400
+         {{ else }}
+           hover:bg-gray-100 dark:hover:bg-slate-800
+         {{ end }}">
+        Dashboard
+      </a>
+
+      <a href="/domains"
+         class="block px-4 py-2 rounded-lg font-medium transition
+         {{ if eq .Active "domains" }}
+           bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400
+         {{ else }}
+           hover:bg-gray-100 dark:hover:bg-slate-800
+         {{ end }}">
+        Domains
+      </a>
+
+      <a href="/servers"
+         class="block px-4 py-2 rounded-lg font-medium transition
+         {{ if eq .Active "servers" }}
+           bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400
+         {{ else }}
+           hover:bg-gray-100 dark:hover:bg-slate-800
+         {{ end }}">
+        Servers
+      </a>
+
+
+      <a href="/settings"
+         class="block px-4 py-2 rounded-lg font-medium transition
+         {{ if eq .Active "settings" }}
+           bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400
+         {{ else }}
+           hover:bg-gray-100 dark:hover:bg-slate-800
+         {{ end }}">
+        Settings
+      </a>
+
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <div class="flex-1 flex flex-col">
+
+    <!-- Top bar -->
+    <header class="bg-white dark:bg-slate-900 shadow-sm
+                   px-6 py-4 flex items-center justify-between
+                   border-b border-gray-200 dark:border-slate-700">
+      <h2 class="text-lg font-semibold"></h2>
+
+      <a href="/logout"
+         class="inline-flex items-center px-4 py-2 rounded-lg border
+                border-gray-300 dark:border-slate-600
+                text-sm text-gray-600 dark:text-gray-300
+                hover:bg-gray-100 dark:hover:bg-slate-800 transition">
+        Logout
+      </a>
+    </header>
+
+    <!-- Page -->
+    <main class="p-6">
+      {{ template "content" . }}
+    </main>
+
+  </div>
+</body>
+</html>
+{{ end }}
