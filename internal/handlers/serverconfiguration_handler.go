@@ -13,20 +13,51 @@ import (
 	"github.com/gorilla/mux"
 )
 
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
+
 type ServerConfigurationHandler struct {
 	Tmpl    *template.Template
 	Service *services.ServerConfigurationService
 }
 
 func NewServerConfigurationHandler() *ServerConfigurationHandler {
-	return &ServerConfigurationHandler{
-		Service: services.NewServerConfigurationService(),
-		Tmpl: template.Must(template.ParseFiles(
+	funcMap := template.FuncMap{
+		"extractPort":  extractPort,
+		"extractLimit": extractLimit,
+		"contains":     contains,
+	}
+
+	tmpl := template.Must(template.New("layout.html").
+		Funcs(funcMap).
+		ParseFiles(
 			"web/templates/layout.html",
 			"web/templates/serverconfiguration.html",
-		)),
+		),
+	)
+
+	return &ServerConfigurationHandler{
+		Service: services.NewServerConfigurationService(),
+		Tmpl:    tmpl,
 	}
 }
+
+// type ServerConfigurationHandler struct {
+// 	Tmpl    *template.Template
+// 	Service *services.ServerConfigurationService
+// }
+
+
+// func NewServerConfigurationHandler() *ServerConfigurationHandler {
+// 	return &ServerConfigurationHandler{
+// 		Service: services.NewServerConfigurationService(),
+// 		Tmpl: template.Must(template.ParseFiles(
+// 			"web/templates/layout.html",
+// 			"web/templates/serverconfiguration.html",
+// 		)),
+// 	}
+// }
 
 func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -58,6 +89,10 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 		h.DeleteErrorPage(w, r)
 	case "delete_error_file":
 		h.DeleteErrorFile(w, r)
+	case "add_con_limit":
+		h.AddConnLimit(w, r)
+	case "delete_rule":
+		h.DeleteConnLimit(w, r)
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
@@ -96,6 +131,14 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		ErrorPages: errorPages,
 		ErrorFiles: errorFiles,
 	}
+	rules, err := h.Service.ListIPTablesRules()
+	rulesForServer := FilterRulesBySource(rules, "10.8.0.6")
+	if err != nil {
+		log.Println("iptables error:", err)
+	} else {
+		page.IPTablesRules = rulesForServer
+	}
+
 
 	h.Tmpl.ExecuteTemplate(w, "layout", page)
 }
@@ -409,8 +452,6 @@ func (h *ServerConfigurationHandler) DeleteCert(w http.ResponseWriter, r *http.R
 	redirectWithTab(w, r, serverID, tab)
 }
 
-
-
 func (h *ServerConfigurationHandler) DeleteErrorPage(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
 
@@ -428,10 +469,62 @@ func (h *ServerConfigurationHandler) DeleteErrorPage(w http.ResponseWriter, r *h
 	redirectWithTab(w, r, serverID, "tab5")
 }
 
+func FilterRulesBySource(rules []models.IPTablesRule, source string) []models.IPTablesRule {
+    var filtered []models.IPTablesRule
+    for _, r := range rules {
+        if r.Source == source {
+            filtered = append(filtered, r)
+        }
+    }
+    return filtered
+}
+
+func (h *ServerConfigurationHandler) AddConnLimit(w http.ResponseWriter, r *http.Request) {
+    serverID := mux.Vars(r)["id"]
+    port, _ := strconv.Atoi(r.FormValue("port"))
+    limit, _ := strconv.Atoi(r.FormValue("limit"))
+    ip := "10.8.0.6"
+
+    if err := h.Service.AddConnectionLimitRule(ip, port, limit); err != nil {
+        log.Println("Add connlimit failed:", err)
+        http.Error(w, "Failed to add rule", http.StatusInternalServerError)
+        return
+    }
+
+    redirectWithTab(w, r, serverID, "tab6")
+}
+
+func (h *ServerConfigurationHandler) DeleteConnLimit(w http.ResponseWriter, r *http.Request) {
+    serverID := mux.Vars(r)["id"]
+    port, _ := strconv.Atoi(r.FormValue("port"))
+    ip := "10.8.0.6"
+
+    if err := h.Service.DeleteConnectionLimitRule(ip, port); err != nil {
+        log.Println("Delete connlimit failed:", err)
+        http.Error(w, "Failed to delete rule", http.StatusInternalServerError)
+        return
+    }
+
+    redirectWithTab(w, r, serverID, "tab6")
+}
+
+
 func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
 	redirectURL := "/servers/" + serverID + "/server_configuration"
 	if tab != "" {
 		redirectURL += "?tab=" + url.QueryEscape(tab)
 	}
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+func extractPort(comment string) string {
+    parts := strings.Split(comment, ":")
+    if len(parts) == 3 {
+        return strings.TrimPrefix(parts[2], "CONNLIMIT_")
+    }
+    return ""
+}
+
+func extractLimit(rule models.IPTablesRule) string {
+    return rule.Limit
 }

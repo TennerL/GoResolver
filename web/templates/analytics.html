@@ -1,0 +1,140 @@
+{{ define "content" }}
+<div class="max-w-7xl mx-auto p-6">
+  <!-- Filters -->
+  <div class="bg-gray-200 dark:bg-slate-800 rounded-xl shadow p-4 mb-6 flex flex-wrap gap-4 items-end">
+    <div>
+      <label class="block text-sm font-medium">Time range (minutes)</label>
+      <input id="range" type="number" value="60" min="1" class="w-full px-2 py-1 rounded border dark:bg-slate-800" />
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium">Host</label>
+      <select id="host" class="w-full px-2 py-1 rounded border dark:bg-slate-800">
+        <option value="">All</option>
+      </select>
+    </div>
+
+    <button id="applyBtn" class="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+      Apply
+    </button>
+  </div>
+
+  <!-- Charts grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+      <h2 class="font-semibold mb-2">Requests over time</h2>
+      <div id="requestsChart" class="h-72"></div>
+    </div>
+
+    <div class="rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+      <h2 class="font-semibold mb-2">Status codes</h2>
+      <div id="statusChart" class="h-72"></div>
+    </div>
+
+    <div class="rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+      <h2 class="font-semibold mb-2">Top URIs</h2>
+      <div id="uriChart" class="h-72"></div>
+    </div>
+
+    <div class="rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+      <h2 class="font-semibold mb-2">Average request time</h2>
+      <div id="latencyChart" class="h-72"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+
+<script>
+
+document.addEventListener("DOMContentLoaded", async () => {
+  const requestsChart = echarts.init(document.getElementById('requestsChart'));
+  const statusChart   = echarts.init(document.getElementById('statusChart'));
+  const uriChart      = echarts.init(document.getElementById('uriChart'));
+  const latencyChart  = echarts.init(document.getElementById('latencyChart'));
+
+  const hostSelect = document.getElementById('host');
+  const rangeInput = document.getElementById('range');
+  const applyBtn   = document.getElementById('applyBtn');
+
+  // Populate hosts dropdown
+  async function loadHosts() {
+    try {
+      const res = await fetch('/api/analytics/hosts');
+      const hosts = await res.json();
+      hosts.forEach(h => {
+        const opt = document.createElement('option');
+        opt.value = h;
+        opt.textContent = h;
+        hostSelect.appendChild(opt);
+      });
+    } catch (err) {
+      console.error('Failed to load hosts:', err);
+    }
+  }
+
+    async function fetchData() {
+        const range = rangeInput.value;
+        const host  = hostSelect.value;
+        try {
+        const res = await fetch(`/api/analytics?range=${range}&host=${encodeURIComponent(host)}`);
+        const data = await res.json();
+        console.log("Analytics data:", data); // <--- important
+        renderRequests(data.requests_over_time);
+        renderStatus(data.status_codes);
+        renderUris(data.top_uris);
+        renderLatency(data.avg_request_time);
+        } catch (err) {
+        console.error('Failed to fetch analytics:', err);
+        }
+    }
+
+
+  function renderRequests(d) {
+    requestsChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: d.labels },
+      yAxis: { type: 'value' },
+      series: [{ type: 'line', smooth: true, data: d.values }]
+    });
+  }
+
+  function renderStatus(d) {
+    statusChart.setOption({
+      tooltip: { trigger: 'item' },
+      xAxis: { type: 'category', data: Object.keys(d) },
+      yAxis: { type: 'value' },
+      series: [{ type: 'bar', data: Object.values(d) }]
+    });
+  }
+
+  function renderUris(d) {
+    uriChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'value' },
+      yAxis: { type: 'category', data: d.labels },
+      series: [{ type: 'bar', data: d.values }]
+    });
+  }
+
+  function renderLatency(d) {
+    latencyChart.setOption({
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: d.labels },
+      yAxis: { type: 'value' },
+      series: [{ type: 'line', smooth: true, data: d.values }]
+    });
+  }
+
+  // Apply button click
+  applyBtn.addEventListener('click', fetchData);
+
+  // Initial load
+  await loadHosts();
+  fetchData();
+
+  // Auto-refresh every 5s
+  setInterval(fetchData, 5000);
+});
+</script>
+{{ end }}

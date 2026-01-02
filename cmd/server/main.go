@@ -17,8 +17,10 @@ type RecordWithTTL struct {
 	TTL     uint32
 }
 
+
 func main() {
 	db.Init()
+
 
 	//go startDNSServer()
 	go logging.StartNginxLogIngester(

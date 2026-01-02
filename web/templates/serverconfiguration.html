@@ -14,8 +14,7 @@
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab3">Reverse Proxy Settings</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab4">Certificates</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab5">Custom Errors</button>
-        <button type="button" class="{{ $tabBtnClass }}" data-tab="tab6">Analytics</button>
-        <button type="button" class="{{ $tabBtnClass }}" data-tab="tab7">IP-Restrictions</button>
+        <button type="button" class="{{ $tabBtnClass }}" data-tab="tab6">Networking & IP-Restrictions</button>
     </nav>
 </div>
 
@@ -308,21 +307,64 @@
                     </table>
                 </div>
             </div>
-
-            <!-- Tab 6: Analytics -->
+            <!-- Tab 6: IP Restrictions -->
             <div id="tab6" class="tab-content hidden">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div class="h-24 bg-gray-200 dark:bg-slate-800 rounded-lg flex items-center justify-center">Placeholder A</div>
-                    <div class="h-24 bg-gray-200 dark:bg-slate-800 rounded-lg flex items-center justify-center">Placeholder B</div>
+                <p class="text-sm text-gray-500 mb-4">Connection limits for this server IP ({{.IP}})</p>
+
+                <div class="mt-4 sm:mt-0 flex gap-3">
+                    <button type="button" 
+                        onclick="openConLimitModal()" 
+                        class="mt-4 mr-4 mb-4 ml-0 {{ $btnClass }} border-red-300 dark:border-red-600 hover:bg-red-100 dark:hover:bg-red-800">
+                        + Add Connection Limit
+                    </button>
+                </div>
+
+                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md overflow-hidden">
+                  
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50 dark:bg-slate-800 border-b">
+                                <tr class="text-left text-gray-500 dark:text-gray-400">
+                                    <th class="px-4 py-3">#</th>
+                                    <th class="px-4 py-3">Packets</th>
+                                    <th class="px-4 py-3">Bytes</th>
+                                    <th class="px-4 py-3">Target</th>
+                                    <th class="px-4 py-3">Protocol</th>
+                                    <th class="px-4 py-3">Source</th>
+                                    <th class="px-4 py-3">Destination</th>
+                                    <th class="px-4 py-3">Port</th>
+                                    <th class="px-4 py-3">Limit</th>
+                                    <th class="px-4 py-3">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{range .IPTablesRules}}
+                                <tr class="border-b">
+                                    <td class="px-4 py-3">{{.Num}}</td>
+                                    <td class="px-4 py-3">{{.Pkts}}</td>
+                                    <td class="px-4 py-3">{{.Bytes}}</td>
+                                    <td class="px-4 py-3">{{.Target}}</td>
+                                    <td class="px-4 py-3">{{.Prot}}</td>
+                                    <td class="px-4 py-3">{{.Source}}</td>
+                                    <td class="px-4 py-3">{{.Destination}}</td>
+                                    <td class="px-4 py-3">{{extractPort .Extra}}</td>
+                                    <td class="px-4 py-3">{{.Limit}}</td>
+                                    <td class="px-4 py-3">
+                                        <input type="hidden" name="port" value="{{extractPort .Extra}}">
+                                        <button type="submit" 
+                                                name="action_type" 
+                                                value="delete_rule" 
+                                                class="btndelete text-red-600 hover:underline opacity-60">Delete
+                                        </button>
+                                    </td>
+                                </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
-            <!-- Tab 7: IP Restrictions -->
-            <div id="tab7" class="tab-content hidden">
-                <p class="text-sm text-gray-500 mb-6">Configure IP-based access restrictions</p>
-            </div>
-        </div>
 
+        </div>
         <!-- Sidebar with shared button class -->
         <aside class="w-48 shrink-0">
             <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md p-4 flex flex-col gap-3 sticky top-6">
@@ -333,6 +375,27 @@
         </aside>
     </div>
 </form>
+
+<div id="conLimitModal" class="fixed inset-0 z-50 hidden flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeConLimitModal()"></div>
+        <div class="relative w-full max-w-3xl mx-4 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-slate-700 overflow-hidden">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-slate-700">
+                <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Add Connection Limit</h2>
+                <button type="button" onclick="closeConLimitModal()" class="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition text-xl leading-none">✕</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <input type="number" name="port" placeholder="Port" required class="editable px-2 py-1 rounded border dark:bg-slate-800">
+                        <input type="number" name="limit" placeholder="Max Connections" required class="editable px-2 py-1 rounded border dark:bg-slate-800">
+                        <button type="submit" 
+                                name="action_type" 
+                                value="add_con_limit" 
+                                class="btndelete text-red-600 hover:underline opacity-60">Add</button>
+                        </div>
+                </div>
+            </div>
+        </div>
+</div>
 
 <!-- Error page modal with consolidated structure -->
 <div id="errorPageModal" class="fixed inset-0 z-50 hidden flex items-center justify-center">
@@ -511,6 +574,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 });
 
+// Con Limit modal 
+function openConLimitModal() {
+    document.getElementById("conLimitModal").classList.remove("hidden");
+    document.body.classList.add("overflow-hidden")
+}
+
+function closeConLimitModal() {
+    document.getElementById("conLimitModal").classList.add("hidden");
+    document.body.classList.remove("overflow-hidden")
+}
+
 // Error page modal
 function openErrorPageModal() {
     document.getElementById("errorPageModal").classList.remove("hidden");
@@ -593,6 +667,8 @@ document.addEventListener("keydown", e => {
         closeEditor();
     }
 });
+
+
 </script>
 
 {{ end }}

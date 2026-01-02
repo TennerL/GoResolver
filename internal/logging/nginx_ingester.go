@@ -34,7 +34,8 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 	}
 	defer file.Close()
 
-	file.Seek(0, io.SeekStart)
+	//file.Seek(0, io.SeekStart)
+	file.Seek(0, io.SeekEnd)
 
 	reader := bufio.NewReader(file)
 	batch := make([]NginxLog, 0, 100)
@@ -46,7 +47,7 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 		select {
 		case <-flushTicker.C:
 			if len(batch) > 0 {
-				log.Printf("flushing %d logs\n", len(batch))
+				//log.Printf("flushing %d logs\n", len(batch))
 				insertBatch(db, batch)
 				batch = batch[:0]
 			}
@@ -91,7 +92,7 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 
 
 			if len(batch) >= 100 {
-				log.Printf("batch size reached: %d\n", len(batch))
+				//log.Printf("batch size reached: %d\n", len(batch))
 				insertBatch(db, batch)
 				batch = batch[:0]
 			}

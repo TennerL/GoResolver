@@ -2,7 +2,8 @@ package app
 
 import (
 	"net/http"
-
+	"io/fs"
+	"GoResolver/web"
 	"GoResolver/internal/handlers"
 	"github.com/gorilla/mux"
 )
@@ -17,6 +18,7 @@ func NewRouter() http.Handler {
 	servers := handlers.NewServerHandler()
 	serverconfiguration := handlers.NewServerConfigurationHandler()
 	login := handlers.NewLoginHandler()
+	analyticsHandler := handlers.NewAnalyticsHandler()
 
 	r.HandleFunc("/login", login.Index).Methods("GET", "POST")
 	r.HandleFunc("/logout", login.Logout).Methods("GET", "POST")
@@ -41,12 +43,20 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/error-files/{id}", RequireAuth(serverconfiguration.GetErrorFile)).Methods("GET")
 	r.HandleFunc("/error-files/{id}", RequireAuth(serverconfiguration.UpdateErrorFile)).Methods("PUT")
 
+	// Analytics
+	r.HandleFunc("/analytics", RequireAuth(analyticsHandler.Index)).Methods("GET")
+	r.HandleFunc("/api/analytics", RequireAuth(analyticsHandler.API)).Methods("GET")
+	r.HandleFunc("/api/analytics/hosts", RequireAuth(analyticsHandler.Hosts)).Methods("GET")
 
-
+	static, err := fs.Sub(web.StaticFS, "static")
+	if err != nil {
+		panic(err)
+	}
 
 	r.PathPrefix("/static/").
 		Handler(http.StripPrefix("/static/",
-			http.FileServer(http.Dir("web/static"))))
+			http.FileServer(http.FS(static)),
+		))
 
 	return r
 }
