@@ -49,8 +49,8 @@
                     <td class="px-6 py-4 text-center whitespace-nowrap">
                         <div class="flex gap-4 justify-center">
                             <a href="/servers/{{ .ID }}/server_configuration"
-                            class="text-red-600 dark:text-red-400 font-medium hover:underline">
-                            Edit
+                            class="text-red-600 dark:text-blue-400 font-medium hover:underline">
+                            Configure
                             </a>
 
                             <form method="POST" action="/servers/{{.ID}}/delete"
@@ -63,6 +63,43 @@
                 {{ end }}
             </tbody>
         </table>
+    </div>
+
+    <div
+        x-show="open"
+        x-cloak
+        class="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50"
+        >
+        <div class="bg-white dark:bg-slate-900 rounded-xl shadow-xl w-96 p-8 relative">
+            <button @click="open = false"
+            class="absolute top-2 right-2 text-gray-500 dark:text-gray-400 hover:text-gray-800">
+            &times;
+            </button>
+
+            <h2 class="text-2xl font-semibold mb-4">Add a new Server</h2>
+
+            <form method="POST" action="/servers/new" class="space-y-4">
+                <input type="text" name="friendlyName" placeholder="Friendly Name"
+                    class="w-full px-4 py-2 border border-gray-300 dark:border-slate-600
+                        rounded-lg bg-white dark:bg-slate-800"
+                    required>
+
+                <input type="text" name="desiredIP" placeholder="Desired IP"
+                    class="w-full px-4 py-2 border border-gray-300 dark:border-slate-600
+                        rounded-lg bg-white dark:bg-slate-800"
+                    required>
+
+                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg">
+                    Speichern
+                </button>
+            </form>
+
+            <div class="mt-4 text-sm text-gray-600 dark:text-gray-400 border-t border-gray-200 dark:border-slate-700 pt-3">
+                <p class="mb-1">• You will be able to create a VPN connection to this server upon saving</p>
+                <p class="mb-1">• The IP-Address must correspond with the VPN-Server's subnet</p>
+                <p class="mb-0">• In future versions, you will be able to manage the Settings of the VPN-Server</p>
+            </div>
+        </div>
     </div>
 
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>

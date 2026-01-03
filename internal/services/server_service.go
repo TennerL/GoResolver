@@ -14,7 +14,7 @@ func NewServerService() *ServerService {
 }
 
 func (s *ServerService) GetServers() []models.Server {
-	rows, err := db.DB.Query("SELECT id, domain_id, name, ip, vpn_file FROM servers ORDER BY id")
+	rows, err := db.DB.Query("SELECT id, domain_id, name, ip FROM servers ORDER BY id")
 	if err != nil {
 		log.Println("DB query error:", err)
 		return nil
@@ -24,7 +24,7 @@ func (s *ServerService) GetServers() []models.Server {
 	var servers []models.Server
 	for rows.Next() {
 		var srv models.Server
-		if err := rows.Scan(&srv.ID, &srv.Domain_ID, &srv.Name, &srv.IP, &srv.VPN_File); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Domain_ID, &srv.Name, &srv.IP); err != nil {
 			log.Println("Row scan error:", err)
 			continue
 		}
@@ -37,6 +37,24 @@ func (s *ServerService) GetServers() []models.Server {
 	}
 
 	return servers
+}
+
+func(s *ServerService) AddServer(srv models.Server) error {
+	result, err := db.DB.Exec(`
+		INSERT INTO servers (name, ip)
+		VALUES (?,?)
+	`, 
+		srv.Name,
+		srv.IP,
+	)
+	if err != nil {
+		log.Println("Error adding new server:", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	log.Println("Rows inserted into server_configuration:", rows)
+
+	return nil
 }
 
 func checkStatus(ip string) string {

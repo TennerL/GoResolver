@@ -38,6 +38,8 @@
             <!-- Tab 2: VPN -->
             <div id="tab2" class="tab-content hidden">
                 <p class="text-sm text-gray-500 mb-6">Manage VPN connection to this server</p>
+
+                {{ if .VPN_File }}
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
                     <div class="flex flex-col">
                         <label class="mb-1 font-medium">IP of Host</label>
@@ -47,10 +49,32 @@
                         <button type="button" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600" onclick="downloadVPN()">Download</button>
                     </div>
                 </div>
+
                 <label class="mt-8 mb-1 font-medium block">Host-Config</label>
                 <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md overflow-hidden">
                     <textarea name="vpn_file" rows="10" placeholder="Content" class="{{ $inputClass }}">{{ .VPN_File }}</textarea>
                 </div>
+
+                {{ else }}
+                <div class="flex flex-col items-center justify-center h-48 bg-gray-100 dark:bg-slate-800 rounded-xl">
+                    <p class="text-gray-500 mb-4">No VPN configuration found for this server.</p>
+                    <div class="space-y-4">
+                        <input
+                            type="password"
+                            name="pass"
+                            placeholder="VPN Passphrase"
+                            class="px-4 py-2 rounded-lg border dark:bg-slate-800"
+                        />
+                        <input name="vpn_ip" value="{{ .IP }}" type="hidden" />
+                        <button type="submit" 
+                                name="action_type" 
+                                value="create-vpn-file"
+                                class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                            Create VPN Config
+                        </button>
+                    </div>
+                </div>
+                {{ end }}
             </div>
 
             <!-- Tab 3: Reverse Proxy Settings -->
@@ -74,6 +98,7 @@
                         </thead>
                         <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
                             {{ range $item := .Data }}
+                            {{ if not (eq $item.Server_Name "dummy") }}
                             <tr class="hover:bg-gray-50 dark:hover:bg-slate-800 transition">
                                 <td class="px-6 py-4 text-gray-400">
                                     {{ $item.ID }}
@@ -110,6 +135,7 @@
                                     <button type="submit" name="action_type" value="delete" onclick="return confirm('Delete Site?')" class="btndelete text-red-600 hover:underline opacity-60" data-id="{{ $item.ID }}" data-server="{{ $item.Server_Name }}">Delete</button>
                                 </td>
                             </tr>
+                            {{ end }}
                             {{ end }}
                             <!-- New site row -->
                             <tr id="trNewSite" class="bg-blue-50 dark:bg-slate-800" hidden>
@@ -166,6 +192,7 @@
                         </thead>
                         <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
                             {{ range $item := .Data }}
+                            {{ if not (eq $item.Server_Name "dummy") }}
                             <tr class="hover:bg-gray-50 dark:hover:bg-slate-800 transition">
                                 <td class="px-6 py-4 text-gray-400">{{ $item.Server_Name }}</td>
                                 <td class="px-6 py-4 font-medium">{{ $item.Cert_Path }}</td>
@@ -173,6 +200,9 @@
                                 <td class="px-6 py-4 font-medium">{{ $item.Cert_Issued }}</td>
                                 <td class="px-6 py-4 font-medium">{{ $item.Cert_Expiration }}</td>
                                 {{ if eq $item.Cert_Path "" }}
+                                <input type="hidden" name="id" value="{{ $item.ID }}">
+                                <input type="hidden" name="serverName" value="{{ $item.Server_Name }}">
+
                                 <td class="tdDeleteSite px-6 py-4 text-center whitespace-nowrap">
                                     <button type="submit" name="action_type" value="issue_cert" onclick="return confirm('Issue Certificate?')" class="btndelete text-green-600 hover:underline opacity-60" data-id="{{ $item.ID }}" data-server="{{ $item.Server_Name }}" disabled>+ Issue Certificate</button>
                                 </td>
@@ -185,6 +215,7 @@
                                 </td>
                                 {{ end }}
                             </tr>
+                            {{ end }}
                             {{ end }}
                         </tbody>
                     </table>
@@ -239,7 +270,9 @@
                                     <select name="site_id[]" class="editable px-2 py-1 rounded border dark:bg-slate-800">
                                         <option value="0">* (All Sites)</option>
                                         {{ range .Data }}
+                                        {{ if not (eq .Server_Name "dummy") }}
                                         <option value="{{ .ID }}">{{ .Server_Name }}</option>
+                                        {{ end }}
                                         {{ end }}
                                     </select>
                                     <input type="hidden" name="error_page_id[]" value="">

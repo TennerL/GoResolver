@@ -30,3 +30,23 @@ func (h *ServerHandler) Index(w http.ResponseWriter, r *http.Request) {
 
 	h.Tmpl.ExecuteTemplate(w, "layout", page)
 }
+
+func (h *ServerHandler) AddServer(w http.ResponseWriter, r *http.Request) {
+	
+	name := r.FormValue("friendlyName")
+	ip := r.FormValue("desiredIP")
+	
+	server := models.Server{
+		Name: name,
+		IP: ip,
+	}
+
+	err := h.Service.AddServer(server)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w,r, "/servers", http.StatusSeeOther)
+}

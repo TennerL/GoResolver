@@ -34,6 +34,7 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/records/{id}/delete", RequireAuth(records.Delete)).Methods("POST")
 	// Servers 
 	r.HandleFunc("/servers", RequireAuth(servers.Index)).Methods("GET")
+	r.HandleFunc("/servers/new", RequireAuth(servers.AddServer)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(serverconfiguration.Index)).Methods("GET")
 	r.HandleFunc(
 		"/servers/{id:[0-9]+}/server_configuration",

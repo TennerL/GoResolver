@@ -78,6 +78,8 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 		h.AddRule(w, r)
 	case "delete_rule":
 		h.DeleteRule(w, r)
+	case "create-vpn-file":
+		h.CreateVPNConfig(w, r)
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
@@ -93,9 +95,8 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 	conf := h.Service.GetServerConfiguration(serverID)
 	if len(conf) == 0 {
 		http.Error(w, "No server config found", http.StatusNotFound)
-		return
 	}
-
+	
 	errorPages := h.Service.GetServerErrorPages(serverID)
 	errorFiles := h.Service.GetServerErrorFiles()
 
@@ -115,7 +116,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		ErrorFiles: errorFiles,
 	}
 	rules, err := h.Service.ListIPTablesRules()
-	rulesForServer := FilterRulesForServer(rules, "87.106.24.216" ,"10.8.0.6")
+	rulesForServer := FilterRulesForServer(rules, "87.106.24.216" ,conf[0].IP)
 	if err != nil {
 		log.Println("iptables error:", err)
 	} else {
@@ -562,6 +563,49 @@ func isGoResolverRule(comment string) bool {
 func extractLimit(rule models.IPTablesRule) string {
     return rule.Limit
 }
+
+func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *http.Request) {
+    serverID := mux.Vars(r)["id"]
+    if serverID == "" {
+        http.Error(w, "No server id supplied", http.StatusBadRequest)
+        return
+    }
+
+	vpn_ip := r.FormValue("vpn_ip")
+	if vpn_ip == "" {
+		http.Error(w, "No VPN-IP set", http.StatusBadRequest)
+		return
+	}
+
+	pass := r.FormValue("pass")
+	if pass == "" {
+		http.Error(w, "Passphrase required", http.StatusBadRequest)
+		return 
+	}
+
+    clientName := fmt.Sprintf("client-%s", serverID)
+
+    config, err := h.Service.GenerateVPNClientConfig(serverID, clientName, pass)
+    if err != nil {
+        http.Error(w, "Failed to generate VPN config: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    err = h.Service.SaveVPNConfig(serverID, []byte(config))
+    if err != nil {
+        http.Error(w, "Failed to save VPN config: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+	err = h.Service.AssignStaticVPNIP(clientName, vpn_ip)
+	if err != nil {
+		http.Error(w, "Failed to assign static ip:"+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	redirectWithTab(w, r, mux.Vars(r)["id"], "tab2")
+}
+
 
 func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
 	redirectURL := "/servers/" + serverID + "/server_configuration"

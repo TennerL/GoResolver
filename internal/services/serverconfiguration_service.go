@@ -76,52 +76,51 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 	var serverConfigurations []models.ServerConfiguration
 
 	for rows.Next() {
-		var sc models.ServerConfiguration
-		var vpnBlob []byte
+	var sc models.ServerConfiguration
+	//var vpnBlob sql.NullBytes
+	var vpnBlob []byte
 
-		if err := rows.Scan(
-			&sc.ID,
-			&sc.Server_Name,
-			&sc.Server_Port,
-			&sc.SSL_Enabled,
-			&sc.SSL_Redirect,
-			&sc.Proxy_Pass_Port,
-			&sc.Proxy_Intercept_Errors,
-			&sc.Proxy_Connect_Timeout,
-			&sc.Proxy_Read_Timeout,
-			&sc.Proxy_Send_Timeout,
-			&sc.Websockets,
-			&sc.IP,
-			&vpnBlob,
-			&sc.Port,
-			&sc.Name,
-			&sc.Cert_Path,
-			&sc.Key_Path,
-			&sc.Cert_Issued,
-			&sc.Cert_Expiration,
-		); err != nil {
-			log.Println("Row scan error:", err)
-			continue
-		}
-
-		if len(vpnBlob) > 0 {
-			decrypted, err := DecryptVPN(vpnBlob)
-			if err != nil {
-				log.Println("Decryption failed:", err)
-			} else {
-				sc.VPN_File = decrypted
-			}
-		} else {
-			sc.VPN_File = nil
-		}
-
-		serverConfigurations = append(serverConfigurations, sc)
+	if err := rows.Scan(
+		&sc.ID,
+		&sc.Server_Name,
+		&sc.Server_Port,
+		&sc.SSL_Enabled,
+		&sc.SSL_Redirect,
+		&sc.Proxy_Pass_Port,
+		&sc.Proxy_Intercept_Errors,
+		&sc.Proxy_Connect_Timeout,
+		&sc.Proxy_Read_Timeout,
+		&sc.Proxy_Send_Timeout,
+		&sc.Websockets,
+		&sc.IP,
+		&vpnBlob,
+		&sc.Port,
+		&sc.Name,
+		&sc.Cert_Path,
+		&sc.Key_Path,
+		&sc.Cert_Issued,
+		&sc.Cert_Expiration,
+	); err != nil {
+		log.Println("Row scan error:", err)
+		continue
 	}
 
+	if len(vpnBlob) > 0 {
+		decrypted, err := DecryptVPN(vpnBlob)
+		if err != nil {
+			sc.VPN_File = nil
+		} else {
+			sc.VPN_File = decrypted
+		}
+	} else {
+		sc.VPN_File = nil
+	}
+
+
+	serverConfigurations = append(serverConfigurations, sc)
+	}
 	return serverConfigurations
 }
-
-
 
 func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerConfiguration) error {
 	result, err := db.DB.Exec(`
@@ -222,7 +221,7 @@ func (s *ServerConfigurationService) GetServerErrorPages(serverID string) []mode
 		FROM error_pages ep
 		LEFT JOIN error_page_files ef ON ef.id = ep.error_page_id
         LEFT JOIN server_configuration sc ON sc.id = ep.site_id
-		WHERE ep.server_id = ?
+		WHERE ep.server_id = ? OR ep.site_id = '*'
 	`, serverID)
 	if err != nil {
 		log.Println("SELECT error_pages failed:", err)
@@ -357,7 +356,6 @@ func (s *ServerConfigurationService) UploadErrorPage(ef models.ServerErrorFiles)
 	}
 
 	if err := os.WriteFile(path, ef.File, 0644); err != nil {
-		log.Println("write file failed:", err)
 		return err
 	}
 
@@ -641,6 +639,137 @@ func (s *ServerConfigurationService) Delete(id string, serverName string) error 
 
 	return err
 }
+
+func (s *ServerConfigurationService) GenerateVPNClientConfig(
+    serverID string,
+    clientName string,
+    caPassphrase string, 
+) (string, error) {
+
+    pkiDir := "/root/openvpn-ca/pki"
+    easyRSADir := "/root/openvpn-ca"
+    easyRSA := "/usr/share/easy-rsa/easyrsa"
+
+    caCertPath := filepath.Join(pkiDir, "ca.crt")
+    clientCertPath := filepath.Join(pkiDir, "issued", clientName+".crt")
+    clientKeyPath := filepath.Join(pkiDir, "private", clientName+".key")
+    taKeyPath := filepath.Join(easyRSADir, "ta.key")
+
+    if _, err := os.Stat(clientCertPath); os.IsNotExist(err) {
+
+        args := []string{"build-client-full", clientName, "nopass"}
+        cmd := exec.Command(easyRSA, args...)
+        cmd.Dir = easyRSADir
+
+        env := os.Environ()
+        env = append(env, "EASYRSA_BATCH=1")
+
+        if caPassphrase != "" {
+            env = append(env, "EASYRSA_PASSIN=pass:"+caPassphrase)
+        }
+
+        cmd.Env = env
+
+        output, err := cmd.CombinedOutput()
+        if err != nil {
+            return "", fmt.Errorf(
+                "easy-rsa failed: %v\n%s",
+                err,
+                string(output),
+            )
+        }
+    }
+
+    ca, err := os.ReadFile(caCertPath)
+    if err != nil {
+        return "", err
+    }
+
+    cert, err := os.ReadFile(clientCertPath)
+    if err != nil {
+        return "", err
+    }
+
+    key, err := os.ReadFile(clientKeyPath)
+    if err != nil {
+        return "", err
+    }
+
+    taKey, _ := os.ReadFile(taKeyPath)
+
+    conf := fmt.Sprintf(`client
+dev tun
+proto udp
+remote nsstatic.org 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-CBC
+verb 3
+key-direction 1
+
+<ca>
+%s
+</ca>
+
+<cert>
+%s
+</cert>
+
+<key>
+%s
+</key>
+`,
+        string(ca),
+        string(cert),
+        string(key),
+    )
+
+    if len(taKey) > 0 {
+        conf += fmt.Sprintf(`
+<tls-auth>
+%s
+</tls-auth>
+`, string(taKey))
+    }
+
+    return conf, nil
+}
+
+func (s *ServerConfigurationService) SaveVPNConfig(serverID string, config []byte) error {
+    query := `UPDATE servers SET vpn_file = ? WHERE id = ?`
+
+	if len(config) > 0 {
+		encrypted, err := EncryptVPN(config)
+		if err != nil {
+			log.Println("Encryption failed:", err)
+		} else {
+			config = encrypted
+		}
+	}
+
+    _, err := db.DB.Exec(query, config, serverID)
+    return err
+}
+
+func (s *ServerConfigurationService) AssignStaticVPNIP(clientName, ip string) error {
+    ccdDir := "/etc/openvpn/ccd"
+    path := filepath.Join(ccdDir, clientName)
+
+    content := fmt.Sprintf(
+        "ifconfig-push %s 255.255.255.0\n",
+        ip,
+    )
+
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		return err
+	}
+
+    return nil
+}
+
 
 func EncryptVPN(data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(aesKey)
@@ -1209,3 +1338,4 @@ func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment s
     }
     return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
 }
+
