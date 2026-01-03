@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"time"
 	"strconv"
-	"bytes"
 	"strings"
 	"sort"
 	_ "github.com/go-sql-driver/mysql"
@@ -1010,158 +1009,203 @@ func fsRemoveCert(domain string) {
 
 
 func (s *ServerConfigurationService) ListIPTablesRules() ([]models.IPTablesRule, error) {
-	cmd := exec.Command("sudo", "/sbin/iptables", "-L", "-v", "-n", "--line-numbers")
+    var rules []models.IPTablesRule
 
-	// capture combined stdout+stderr
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Println("iptables exec error:", err)
-		log.Println("iptables output:", string(out))
-		return nil, err
-	}
+    tables := []string{"filter", "nat"}
 
-	// split output into lines
-	lines := strings.Split(string(out), "\n")
-	var rules []models.IPTablesRule
-	// re := regexp.MustCompile(`/\* (.+) \*/`) 
-	reLimit := regexp.MustCompile(`#conn src/32 > (\d+)`)
+    reConnLimit := regexp.MustCompile(`#conn src/32 > (\d+)`)
+    reComment := regexp.MustCompile(`/\* (.+?) \*/`)
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Chain") || strings.HasPrefix(line, "pkts") {
-			continue
-		}
+    for _, table := range tables {
+        args := []string{}
+        if table != "filter" {
+            args = append(args, "-t", table)
+        }
+        args = append(args, "-L", "-v", "-n", "--line-numbers")
 
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue	
-		}
-		extra := strings.Join(fields[10:], " ") 
-		
-		limit := ""
-		if m := reLimit.FindStringSubmatch(extra); len(m) == 2 {
-			limit = m[1] // e.g., "50"
-		}
+        cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+        out, err := cmd.CombinedOutput()
+        if err != nil {
+            return nil, fmt.Errorf("iptables list (%s) failed: %s", table, out)
+        }
 
-		commentRe := regexp.MustCompile(`/\* (.+) \*/`)
-		comment := ""
-		if m := commentRe.FindStringSubmatch(extra); len(m) == 2 {
-			comment = m[1]
-		}
+        lines := strings.Split(string(out), "\n")
 
-		rule := models.IPTablesRule{
-			Num:         fields[0],
-			Pkts:        fields[1],
-			Bytes:       fields[2],
-			Target:      fields[3],
-			Prot:        fields[4],
-			Opt:         fields[5],
-			In:          fields[6],
-			Out:         fields[7],
-			Source:      fields[8],
-			Destination: fields[9],
-			Extra:       comment, 
-			Limit:       limit, 
-		}
+        currentChain := ""
 
-		rules = append(rules, rule)
+        for _, line := range lines {
+            line = strings.TrimSpace(line)
 
-		sort.Slice(rules, func(i, j int) bool {
-			numI, _ := strconv.Atoi(rules[i].Num)
-			numJ, _ := strconv.Atoi(rules[j].Num)
-			return numI < numJ
-		})
+            if strings.HasPrefix(line, "Chain ") {
+                // Example: Chain INPUT (policy ACCEPT)
+                parts := strings.Fields(line)
+                if len(parts) >= 2 {
+                    currentChain = parts[1]
+                }
+                continue
+            }
 
-	}
+            if line == "" || strings.HasPrefix(line, "pkts") {
+                continue
+            }
 
-	return rules, nil
+            fields := strings.Fields(line)
+            if len(fields) < 10 {
+                continue
+            }
+
+            extra := strings.Join(fields[10:], " ")
+
+            // Extract limit
+            limit := ""
+            if m := reConnLimit.FindStringSubmatch(extra); len(m) == 2 {
+                limit = m[1]
+            }
+
+            // Extract comment
+            comment := ""
+            if m := reComment.FindStringSubmatch(extra); len(m) == 2 {
+                comment = m[1]
+            }
+
+            rule := models.IPTablesRule{
+                Table:       table,
+                Chain:       currentChain,
+                Num:         fields[0],
+                Pkts:        fields[1],
+                Bytes:       fields[2],
+                Target:      fields[3],
+                Prot:        fields[4],
+                Opt:         fields[5],
+                In:          fields[6],
+                Out:         fields[7],
+                Source:      fields[8],
+                Destination: fields[9],
+                Extra:       comment,
+                Limit:       limit,
+            }
+
+            rules = append(rules, rule)
+        }
+    }
+
+    sort.SliceStable(rules, func(i, j int) bool {
+        if rules[i].Table != rules[j].Table {
+            return rules[i].Table < rules[j].Table
+        }
+        if rules[i].Chain != rules[j].Chain {
+            return rules[i].Chain < rules[j].Chain
+        }
+        ni, _ := strconv.Atoi(rules[i].Num)
+        nj, _ := strconv.Atoi(rules[j].Num)
+        return ni < nj
+    })
+
+    return rules, nil
 }
 
-func (s *ServerConfigurationService) DeleteIPTablesRule(chain string, ruleNum int) error {
-    cmd := exec.Command(
-        "sudo", "/sbin/iptables",
-        "-D", chain, strconv.Itoa(ruleNum),
-    )
+
+func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error {
+    args := []string{}
+
+    if spec.Table != "" && spec.Table != "filter" {
+        args = append(args, "-t", spec.Table)
+    }
+
+    args = append(args, "-A", spec.Chain)
+
+    if spec.Protocol != "" && spec.Protocol != "all" {
+        args = append(args, "-p", spec.Protocol)
+    }
+
+    if spec.SynOnly {
+        args = append(args, "--syn")
+    }
+
+    if spec.SourceIP != "" {
+        args = append(args, "-s", spec.SourceIP)
+    }
+
+    if spec.DestIP != "" {
+        args = append(args, "-d", spec.DestIP)
+    }
+
+    if spec.DestPort > 0 {
+        args = append(args, "--dport", strconv.Itoa(spec.DestPort))
+    }
+
+    if spec.ConnLimit != nil {
+        args = append(args,
+            "-m", "connlimit",
+            "--connlimit-above", strconv.Itoa(*spec.ConnLimit),
+            "--connlimit-mask", "32",
+        )
+    }
+
+    if spec.LimitRate != "" {
+        args = append(args,
+            "-m", "limit",
+            "--limit", spec.LimitRate,
+        )
+        if spec.LimitBurst != "" {
+            args = append(args, "--limit-burst", spec.LimitBurst)
+        }
+    }
+
+    if spec.Target == "DNAT" {
+        args = append(args,
+            "-j", "DNAT",
+            "--to-destination", fmt.Sprintf("%s:%d", spec.ToIP, spec.ToPort),
+        )
+    } else {
+        args = append(args, "-j", spec.Target)
+    }
+
+    if spec.Comment != "" {
+        args = append(args, "-m", "comment", "--comment", spec.Comment)
+    }
+
+    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        return fmt.Errorf("iptables error: %s", out)
+    }
+
+    return nil
+}
+
+func (s *ServerConfigurationService) DeleteRule(chain string, num int, table string) error {
+    args := []string{}
+    if table != "" && table != "filter" {
+        args = append(args, "-t", table)
+    }
+    args = append(args, "-D", chain, strconv.Itoa(num))
+
+    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
     out, err := cmd.CombinedOutput()
     if err != nil {
         return fmt.Errorf("iptables delete failed: %s", string(out))
     }
     return nil
 }
-func (s *ServerConfigurationService) AddConnectionLimitRule(ip string, port int, limit int) error {
-    rule := []string{
-        "-A", "INPUT",
-        "-p", "tcp",
-        "--dport", fmt.Sprintf("%d", port),
-        "-s", ip,
-        "-m", "connlimit",
-        "--connlimit-above", fmt.Sprintf("%d", limit),
-        "--connlimit-mask", "32",
-        "-m", "comment",
-        "--comment", fmt.Sprintf("GoResolver:%s:CONNLIMIT_%d", ip, port),
-        "-j", "DROP",
-    }
 
-    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, rule...)...)
-    var out bytes.Buffer
-    cmd.Stdout = &out
-    cmd.Stderr = &out
-
-    if err := cmd.Run(); err != nil {
-        return fmt.Errorf("iptables exec error: %s, %w", out.String(), err)
-    }
-
-    return nil
-}
-
-func (s *ServerConfigurationService) DeleteConnectionLimitRule(ip string, port int) error {
-    comment := fmt.Sprintf("GoResolver:%s:CONNLIMIT_%d", ip, port)
-    
-    cmdList := exec.Command("sudo", "/sbin/iptables", "-L", "INPUT", "-v", "-n", "--line-numbers")
-    out, err := cmdList.CombinedOutput()
+func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment string) error {
+    args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
+    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+    out, err := cmd.CombinedOutput()
     if err != nil {
-        return fmt.Errorf("iptables list error: %s", string(out))
+        return fmt.Errorf("iptables list failed: %s", string(out))
     }
 
-    lines := bytes.Split(out, []byte("\n"))
+    lines := strings.Split(string(out), "\n")
     for _, line := range lines {
-        if bytes.Contains(line, []byte(comment)) {
-            fields := bytes.Fields(line)
+        if strings.Contains(line, comment) {
+            fields := strings.Fields(line)
             if len(fields) > 0 {
-                ruleNum := string(fields[0])
-                cmdDel := exec.Command("sudo", "/sbin/iptables", "-D", "INPUT", ruleNum)
-                delOut, delErr := cmdDel.CombinedOutput()
-                if delErr != nil {
-                    return fmt.Errorf("iptables delete error: %s, %w", string(delOut), delErr)
-                }
+                num, _ := strconv.Atoi(fields[0])
+                return s.DeleteRule(chain, num, table)
             }
         }
     }
-    return nil
-}
-
-func (s *ServerConfigurationService) AddSYNFloodProtection(ip string) error {
-    rules := [][]string{
-        {
-            "-A", "INPUT", "-p", "tcp", "--syn",
-            "-s", ip,
-            "-m", "limit", "--limit", "10/s", "--limit-burst", "20",
-            "-m", "comment", "--comment", "GoResolver:" + ip + ":SYN_LIMIT",
-            "-j", "ACCEPT",
-        },
-        {
-            "-A", "INPUT", "-p", "tcp", "--syn",
-            "-s", ip,
-            "-m", "comment", "--comment", "GoResolver:" + ip + ":SYN_DROP",
-            "-j", "DROP",
-        },
-    }
-
-    for _, r := range rules {
-        cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, r...)...)
-        if out, err := cmd.CombinedOutput(); err != nil {
-            return fmt.Errorf("iptables error: %s", string(out))
-        }
-    }
-    return nil
+    return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
 }

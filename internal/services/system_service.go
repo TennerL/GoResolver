@@ -33,11 +33,3 @@ func (s *SystemService) GetDashboardData() []models.Dashboard {
 	data = append(data, models.Dashboard{Name: "web.nihonsaba.intern", Status: vpnStatus})
 	return data
 }
-
-
-// func (s *SystemService) GetDashboardData() []models.Dashboard {
-// return []models.Dashboard{
-// 	{Name: "DNS", Status: "Online"},
-// 	{Name: "nihonsaba.de", Status: "Offline"},
-// }
-// }

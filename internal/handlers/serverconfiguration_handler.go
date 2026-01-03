@@ -8,6 +8,7 @@ import (
 	"strings"
 	"net/url"
 	"io"
+	"fmt"
 	"GoResolver/internal/models"
 	"GoResolver/internal/services"
 	"github.com/gorilla/mux"
@@ -43,22 +44,6 @@ func NewServerConfigurationHandler() *ServerConfigurationHandler {
 	}
 }
 
-// type ServerConfigurationHandler struct {
-// 	Tmpl    *template.Template
-// 	Service *services.ServerConfigurationService
-// }
-
-
-// func NewServerConfigurationHandler() *ServerConfigurationHandler {
-// 	return &ServerConfigurationHandler{
-// 		Service: services.NewServerConfigurationService(),
-// 		Tmpl: template.Must(template.ParseFiles(
-// 			"web/templates/layout.html",
-// 			"web/templates/serverconfiguration.html",
-// 		)),
-// 	}
-// }
-
 func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -89,16 +74,14 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 		h.DeleteErrorPage(w, r)
 	case "delete_error_file":
 		h.DeleteErrorFile(w, r)
-	case "add_con_limit":
-		h.AddConnLimit(w, r)
+	case "add_rule":
+		h.AddRule(w, r)
 	case "delete_rule":
-		h.DeleteConnLimit(w, r)
+		h.DeleteRule(w, r)
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
-
 }
-
 
 func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
@@ -132,13 +115,12 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		ErrorFiles: errorFiles,
 	}
 	rules, err := h.Service.ListIPTablesRules()
-	rulesForServer := FilterRulesBySource(rules, "10.8.0.6")
+	rulesForServer := FilterRulesForServer(rules, "87.106.24.216" ,"10.8.0.6")
 	if err != nil {
 		log.Println("iptables error:", err)
 	} else {
 		page.IPTablesRules = rulesForServer
 	}
-
 
 	h.Tmpl.ExecuteTemplate(w, "layout", page)
 }
@@ -295,7 +277,6 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *ServerConfigurationHandler) UploadErrorPage(w http.ResponseWriter, r *http.Request) {
-	//serverID := mux.Vars(r)["id"]
 
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		http.Error(w, "Invalid upload", http.StatusBadRequest)
@@ -469,52 +450,101 @@ func (h *ServerConfigurationHandler) DeleteErrorPage(w http.ResponseWriter, r *h
 	redirectWithTab(w, r, serverID, "tab5")
 }
 
-func FilterRulesBySource(rules []models.IPTablesRule, source string) []models.IPTablesRule {
+func FilterRulesForServer(rules []models.IPTablesRule, serverIPs ...string) []models.IPTablesRule {
     var filtered []models.IPTablesRule
+
+    ipSet := make(map[string]bool)
+    for _, ip := range serverIPs {
+        ipSet[ip] = true
+    }
+
     for _, r := range rules {
-        if r.Source == source {
+        if ipSet[r.Source] || ipSet[r.Destination] {
             filtered = append(filtered, r)
         }
     }
+
     return filtered
 }
 
-func (h *ServerConfigurationHandler) AddConnLimit(w http.ResponseWriter, r *http.Request) {
-    serverID := mux.Vars(r)["id"]
-    port, _ := strconv.Atoi(r.FormValue("port"))
-    limit, _ := strconv.Atoi(r.FormValue("limit"))
-    ip := "10.8.0.6"
+func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Request) {
+    r.ParseForm()
 
-    if err := h.Service.AddConnectionLimitRule(ip, port, limit); err != nil {
-        log.Println("Add connlimit failed:", err)
-        http.Error(w, "Failed to add rule", http.StatusInternalServerError)
+    ruleType := r.FormValue("rule_type")
+
+    port, _ := strconv.Atoi(r.FormValue("port"))
+    toPort, _ := strconv.Atoi(r.FormValue("to_port"))
+
+    spec := models.IPTablesRuleSpec{
+        Table:    r.FormValue("table"),
+        Chain:    r.FormValue("chain"),
+        Protocol: r.FormValue("protocol"),
+        SourceIP: r.FormValue("source_ip"),
+        DestIP:   r.FormValue("dest_ip"),
+        DestPort: port,
+        Target:   r.FormValue("target"),
+    }
+
+    switch ruleType {
+
+    case "connlimit":
+        limit, _ := strconv.Atoi(r.FormValue("conn_limit"))
+        spec.ConnLimit = &limit
+        spec.Comment = fmt.Sprintf("GoResolver:%s:CONNLIMIT_%d", spec.SourceIP, port)
+
+    case "ratelimit":
+        spec.LimitRate = r.FormValue("rate")
+        spec.LimitBurst = r.FormValue("burst")
+        spec.Comment = fmt.Sprintf("GoResolver:%s:RATELIMIT", spec.SourceIP)
+
+    case "syn":
+        spec.LimitRate = r.FormValue("rate")
+        spec.LimitBurst = r.FormValue("burst")
+        spec.SynOnly = true
+        spec.Comment = fmt.Sprintf("GoResolver:%s:SYN", spec.SourceIP)
+
+    case "dnat":
+        spec.ToIP = r.FormValue("to_ip")
+        spec.ToPort = toPort
+        spec.Target = "DNAT"
+        spec.Comment = fmt.Sprintf("GoResolver:DNAT:%d", port)
+
+    case "block":
+        spec.Target = "DROP"
+        spec.Comment = "GoResolver:" + spec.SourceIP + ":BLOCK"
+
+    case "allow":
+        spec.Target = "ACCEPT"
+        spec.Comment = "GoResolver:" + spec.SourceIP + ":ALLOW"
+    }
+
+    if err := h.Service.AddRule(spec); err != nil {
+        http.Error(w, err.Error(), 500)
         return
     }
 
-    redirectWithTab(w, r, serverID, "tab6")
+    redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
 }
 
-func (h *ServerConfigurationHandler) DeleteConnLimit(w http.ResponseWriter, r *http.Request) {
-    serverID := mux.Vars(r)["id"]
-    port, _ := strconv.Atoi(r.FormValue("port"))
-    ip := "10.8.0.6"
+func (h *ServerConfigurationHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
+    r.ParseForm()
 
-    if err := h.Service.DeleteConnectionLimitRule(ip, port); err != nil {
-        log.Println("Delete connlimit failed:", err)
-        http.Error(w, "Failed to delete rule", http.StatusInternalServerError)
+    table := r.FormValue("table")
+    chain := r.FormValue("chain")
+    comment := r.FormValue("comment")
+
+    if table == "" || chain == "" || comment == "" {
+        http.Error(w, "Missing rule identifier", http.StatusBadRequest)
         return
     }
 
-    redirectWithTab(w, r, serverID, "tab6")
-}
+    if err := h.Service.DeleteRuleByComment(chain, table, comment); err != nil {
+        log.Println("Delete rule failed:", err)
+        http.Error(w, "Failed to delete rule: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
 
-
-func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
-	redirectURL := "/servers/" + serverID + "/server_configuration"
-	if tab != "" {
-		redirectURL += "?tab=" + url.QueryEscape(tab)
-	}
-	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+    redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
 }
 
 func extractPort(comment string) string {
@@ -525,6 +555,18 @@ func extractPort(comment string) string {
     return ""
 }
 
+func isGoResolverRule(comment string) bool {
+    return strings.HasPrefix(comment, "GoResolver:")
+}
+
 func extractLimit(rule models.IPTablesRule) string {
     return rule.Limit
+}
+
+func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
+	redirectURL := "/servers/" + serverID + "/server_configuration"
+	if tab != "" {
+		redirectURL += "?tab=" + url.QueryEscape(tab)
+	}
+	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }

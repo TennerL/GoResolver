@@ -55,7 +55,7 @@ func (h *AnalyticsHandler) API(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uriLabels, uriValues, err := h.Service.TopURIs(minutes, host)
+	uriLabels, uriStatusCounts, err := h.Service.TopURIs(minutes, host) 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -74,8 +74,8 @@ func (h *AnalyticsHandler) API(w http.ResponseWriter, r *http.Request) {
 		},
 		"status_codes": statusCodes,
 		"top_uris": map[string]any{
-			"labels": uriLabels,
-			"values": uriValues,
+			"labels":       uriLabels,
+			"status_codes": uriStatusCounts, 
 		},
 		"avg_request_time": map[string]any{
 			"labels": latLabels,
@@ -87,7 +87,6 @@ func (h *AnalyticsHandler) API(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// Hosts API endpoint
 func (h *AnalyticsHandler) Hosts(w http.ResponseWriter, r *http.Request) {
 	hosts, err := h.Service.Hosts()
 	if err != nil {

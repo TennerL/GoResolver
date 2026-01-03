@@ -1,25 +1,38 @@
 {{ define "content" }}
-<div class="max-w-7xl mx-auto p-6">
-  <!-- Filters -->
-  <div class="bg-gray-200 dark:bg-slate-800 rounded-xl shadow p-4 mb-6 flex flex-wrap gap-4 items-end">
-    <div>
-      <label class="block text-sm font-medium">Time range (minutes)</label>
-      <input id="range" type="number" value="60" min="1" class="w-full px-2 py-1 rounded border dark:bg-slate-800" />
+<div class="max-w-8xl mx-auto p-6">
+  <div class="bg-gray-200 dark:bg-slate-800 rounded-2xl shadow-md p-5 mb-6 flex flex-wrap justify-center gap-6 items-end">
+    
+    <div class="flex flex-col items-center">
+      <label class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Time range (minutes)</label>
+      <input 
+        id="range" 
+        type="number" 
+        value="60" 
+        min="1" 
+        class="w-36 px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-700 dark:bg-slate-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+      />
     </div>
 
-    <div>
-      <label class="block text-sm font-medium">Host</label>
-      <select id="host" class="w-full px-2 py-1 rounded border dark:bg-slate-800">
+    <div class="flex flex-col items-center">
+      <label class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Host</label>
+      <select 
+        id="host" 
+        class="w-64 px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-700 dark:bg-slate-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+      >
         <option value="">All</option>
       </select>
     </div>
 
-    <button id="applyBtn" class="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-      Apply
-    </button>
+    <div class="flex flex-col items-center">
+      <button 
+        id="applyBtn" 
+        class="px-5 py-2 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 shadow-md transition"
+      >
+        Apply
+      </button>
+    </div>
   </div>
 
-  <!-- Charts grid -->
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     <div class="rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
       <h2 class="font-semibold mb-2">Requests over time</h2>
@@ -57,7 +70,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const rangeInput = document.getElementById('range');
   const applyBtn   = document.getElementById('applyBtn');
 
-  // Populate hosts dropdown
   async function loadHosts() {
     try {
       const res = await fetch('/api/analytics/hosts');
@@ -79,7 +91,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         try {
         const res = await fetch(`/api/analytics?range=${range}&host=${encodeURIComponent(host)}`);
         const data = await res.json();
-        console.log("Analytics data:", data); // <--- important
+        console.log("Analytics data:", data); 
         renderRequests(data.requests_over_time);
         renderStatus(data.status_codes);
         renderUris(data.top_uris);
@@ -109,12 +121,40 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function renderUris(d) {
-    uriChart.setOption({
-      tooltip: { trigger: 'axis' },
-      xAxis: { type: 'value' },
-      yAxis: { type: 'category', data: d.labels },
-      series: [{ type: 'bar', data: d.values }]
-    });
+      if (!d || !d.status_codes || !d.labels || d.labels.length === 0) return;
+
+      const codes = Object.keys(d.status_codes).filter(code =>
+          d.status_codes[code].some(v => v > 0) 
+      );
+
+      const series = codes.map(code => ({
+          name: code,
+          type: 'bar',
+          stack: 'status',
+          label: { show: false },
+          data: d.status_codes[code]
+      }));
+
+      uriChart.setOption({
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+          legend: { data: codes, 
+            textStyle:{
+              color:'white'
+            },
+          },
+          grid: { left: '20%', right: '5%', bottom: '10%' },
+          xAxis: { type: 'value' },
+          yAxis: {
+              type: 'category',
+              axisLabel: {
+                  rotate: 0,
+                  align: 'right', 
+                  fontSize: 12
+              },
+              data: d.labels
+          },
+          series
+      });
   }
 
   function renderLatency(d) {
@@ -126,10 +166,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  // Apply button click
   applyBtn.addEventListener('click', fetchData);
 
-  // Initial load
   await loadHosts();
   fetchData();
 

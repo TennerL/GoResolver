@@ -2,6 +2,7 @@ package services
 
 import (
 	"GoResolver/internal/db"
+	"fmt"
 )
 
 type AnalyticsService struct {}
@@ -61,33 +62,80 @@ func (s *AnalyticsService) StatusCodes(minutes int, host string) (map[int]int, e
 	return result, nil
 }
 
-func (s *AnalyticsService) TopURIs(minutes int, host string) ([]string, []int, error) {
-	rows, err := db.DB.Query(`
-		SELECT uri, COUNT(*) AS hits
-		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
-		GROUP BY uri
-		ORDER BY hits DESC
-		LIMIT 10`,
-		minutes, host, host,
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
+func (s *AnalyticsService) TopURIs(minutes int, host string) ([]string, map[string][]int, error) {
+    query := `
+        SELECT uri, status, COUNT(*) as hits
+        FROM nginx_logs
+        WHERE time >= NOW() - INTERVAL ? MINUTE
+          AND (? = '' OR host = ?)
+        GROUP BY uri, status
+        ORDER BY hits DESC
+        LIMIT 20
+    `
 
-	var labels []string
-	var values []int
-	for rows.Next() {
-		var uri string
-		var hits int
-		rows.Scan(&uri, &hits)
-		labels = append(labels, uri)
-		values = append(values, hits)
-	}
-	return labels, values, nil
+    rows, err := db.DB.Query(query, minutes, host, host)
+    if err != nil {
+        return nil, nil, err
+    }
+    defer rows.Close()
+
+    type entry struct {
+        URI    string
+        Status int
+        Count  int
+    }
+    entries := []entry{}
+    statusSet := map[int]struct{}{}
+    uriSet := map[string]struct{}{}
+
+    for rows.Next() {
+        var e entry
+        if err := rows.Scan(&e.URI, &e.Status, &e.Count); err != nil {
+            return nil, nil, err
+        }
+        entries = append(entries, e)
+        statusSet[e.Status] = struct{}{}
+        uriSet[e.URI] = struct{}{}
+    }
+
+    labels := []string{}
+    seen := map[string]struct{}{}
+    for _, e := range entries {
+        if _, ok := seen[e.URI]; !ok {
+            labels = append(labels, e.URI)
+            seen[e.URI] = struct{}{}
+            if len(labels) >= 10 {
+                break
+            }
+        }
+    }
+
+    values := map[string][]int{}
+    statusList := []string{}
+    for s := range statusSet {
+        statusStr := fmt.Sprintf("%d", s)
+        statusList = append(statusList, statusStr)
+        values[statusStr] = make([]int, len(labels)) 
+    }
+
+    for _, e := range entries {
+        idx := -1
+        for i, uri := range labels {
+            if uri == e.URI {
+                idx = i
+                break
+            }
+        }
+        if idx == -1 {
+            continue 
+        }
+        values[fmt.Sprintf("%d", e.Status)][idx] = e.Count
+    }
+
+    return labels, values, nil
 }
+
+
 
 func (s *AnalyticsService) AvgRequestTime(minutes int, host string) ([]string, []float64, error) {
 	rows, err := db.DB.Query(`
