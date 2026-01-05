@@ -1,5 +1,9 @@
 # Project Overview
 
+## Installation 
+
+Coming soon...
+
 ## General
 
 This project focuses on scalable network infrastructure management, providing a centralized approach while relying on a single self-managed service.
