@@ -8,6 +8,7 @@ import (
 	"strings"
 	"net/url"
 	"io"
+	"time"
 	"fmt"
 	"GoResolver/internal/models"
 	"GoResolver/internal/services"
@@ -86,6 +87,8 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 }
 
 func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	
 	serverID := mux.Vars(r)["id"]
 	if serverID == "" {
 		http.Error(w, "No id supplied", http.StatusBadRequest)
@@ -100,10 +103,8 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 	errorPages := h.Service.GetServerErrorPages(serverID)
 	errorFiles := h.Service.GetServerErrorFiles()
 
-	vpnText := ""
-	if len(conf[0].VPN_File) > 0 {
-		vpnText = string(conf[0].VPN_File) 
-	}
+	vpnText := string(conf[0].VPN_File)
+
 
 	page := models.PageDataServerConfig{
 		Active:     "servers",
@@ -123,13 +124,18 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		page.IPTablesRules = rulesForServer
 	}
 
-	h.Tmpl.ExecuteTemplate(w, "layout", page)
+
+	if err := h.Tmpl.ExecuteTemplate(w, "layout", page); err != nil {
+		log.Println("template execute error:", err)
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
 }
 
 
 
 func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
+	tab := r.FormValue("active_tab")
 
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
@@ -273,7 +279,6 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	tab := r.FormValue("active_tab")
 	redirectWithTab(w, r, serverID, tab)
 }
 
@@ -401,10 +406,9 @@ func (h *ServerConfigurationHandler) IssueCert(w http.ResponseWriter, r *http.Re
 func (h *ServerConfigurationHandler) RenewCert(w http.ResponseWriter, r *http.Request){
 	serverID := mux.Vars(r)["id"]
 
-	serverName := r.FormValue("serverName")
 	id := r.FormValue("id")
 
-	err := h.Service.RenewCert(id, serverName)
+	err := h.Service.RenewCert(id)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -421,10 +425,9 @@ func (h *ServerConfigurationHandler) DeleteCert(w http.ResponseWriter, r *http.R
 		http.Error(w, "Method not allowed", http.StatusBadRequest)
 		return 
 	}
-	serverName := r.FormValue("serverName")
 	id := r.FormValue("id")
 
-	err := h.Service.DeleteCert(id, serverName)
+	err := h.Service.DeleteCert(id)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -608,9 +611,12 @@ func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *h
 
 
 func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
+
+
 	redirectURL := "/servers/" + serverID + "/server_configuration"
 	if tab != "" {
-		redirectURL += "?tab=" + url.QueryEscape(tab)
+		redirectURL += "?tab=" + url.QueryEscape(tab) + "&t=" + strconv.FormatInt(time.Now().Unix(), 10)
 	}
+	//http.Redirect(w, r, redirectURL, http.StatusFound)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }

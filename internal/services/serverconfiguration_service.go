@@ -899,18 +899,18 @@ func (s *ServerConfigurationService) IssueCert(
 	return nil
 }
 
-func (s *ServerConfigurationService) RenewCert(siteID, domain string) error {
-	var certPath, keyPath string
+func (s *ServerConfigurationService) RenewCert(siteID string) error {
+	var certPath, domain, keyPath string
 	row := db.DB.QueryRow(`
-		SELECT cert_path, key_path
+		SELECT cert_path, key_path, domain
 		FROM certificates
-		WHERE site_id = ? AND domain = ?
-	`, siteID, domain)
+		WHERE site_id = ?
+	`, siteID)
 
-	err := row.Scan(&certPath, &keyPath)
+	err := row.Scan(&certPath, &keyPath, &domain)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("no certificate found for site_id=%s domain=%s", siteID, domain)
+			return fmt.Errorf("no certificate found for site_id=%s", siteID)
 		}
 		return err
 	}
@@ -1063,21 +1063,60 @@ func activateSSL(siteID string, domain string) {
 	DeployNginxConfig(domain)
 }
 
-func (s *ServerConfigurationService) DeleteCert(siteID, domain string) error {
-	certPath := filepath.Join("/etc/ssl", domain+".crt")
+func (s *ServerConfigurationService) DeleteCert(siteID string) error {
+
+	var certPath, domain, keyPath string
+	var privKey crypto.PrivateKey
+
+	row := db.DB.QueryRow(`
+		SELECT cert_path, key_path, domain
+		FROM certificates
+		WHERE site_id = ?
+	`, siteID)
+
+	err := row.Scan(&certPath, &keyPath, &domain)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("no certificate found for site_id=%s", siteID)
+		}
+		return err
+	}
+
 	certPEM, err := os.ReadFile(certPath)
+
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read certificate: %w", err)
 	}
 
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return fmt.Errorf("failed to generate key: %w", err)
+		return fmt.Errorf("failed to read cert private key: %w", err)
 	}
+
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return fmt.Errorf("invalid private key PEM")
+	}
+
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		privKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		privKey, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		privKey, err = x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return fmt.Errorf("unsupported private key type: %s", block.Type)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to parse private key: %w", err)
+	}
+
 
 	user := &User{
 		Email: "info@nihonsaba.net",
-		Key:   privateKey,
+		Key:   privKey,
 	}
 
 	config := lego.NewConfig(user)
@@ -1091,12 +1130,10 @@ func (s *ServerConfigurationService) DeleteCert(siteID, domain string) error {
 
 	if len(certPEM) > 0 {
 		if err := client.Certificate.Revoke(certPEM); err != nil {
-			log.Printf("warning: failed to revoke certificate for %s: %v", domain, err)
-		} else {
-			log.Printf("certificate revoked for %s", domain)
+			return fmt.Errorf("certificate revocation failed for %s: %w", domain, err)
 		}
 	}
-
+	
 	_, err = db.DB.Exec(`
 		UPDATE server_configuration 
 		SET ssl_enabled = 0, server_port = 80, ssl_redirect = 0

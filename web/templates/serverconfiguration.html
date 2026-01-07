@@ -599,12 +599,13 @@
 </div>
 
 <script>
-document.addEventListener("DOMContentLoaded", () => {
+//document.addEventListener("DOMContentLoaded", () => {
     const tabs = document.querySelectorAll(".tab-btn");
     const contents = document.querySelectorAll(".tab-content");
     const activeTabInput = document.getElementById("active_tab");
     const params = new URLSearchParams(window.location.search);
     const initialTab = params.get("tab") || "tab1";
+
 
     // Tab switching
     function activateTab(tabId) {
@@ -645,7 +646,7 @@ document.addEventListener("DOMContentLoaded", () => {
         editBtn.addEventListener("click", () => {
             editableFields.forEach((el, i) => {
                 originalValues[i] = el.value;
-                el.disabled = false;
+                el.disabled = false;      // <== enable immediately
                 el.classList.remove("opacity-60");
             });
             btnDeleteSite.forEach(el => {
@@ -658,6 +659,7 @@ document.addEventListener("DOMContentLoaded", () => {
             saveBtn.hidden = false;
             cancelBtn.hidden = false;
         });
+
     }
 
     if (cancelBtn) {
@@ -703,7 +705,7 @@ document.addEventListener("DOMContentLoaded", () => {
             setHidden("comment", btn.dataset.comment);
         });
     });
-});
+//});
 
 // Con Limit modal 
 function openRuleModal() {
