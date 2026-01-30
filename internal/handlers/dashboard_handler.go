@@ -16,10 +16,11 @@ type DashboardHandler struct {
 func NewDashboardHandler() *DashboardHandler {
 	return &DashboardHandler{
 		Service: services.NewSystemService(),
-		Tmpl: template.Must(template.ParseFiles(
+		Tmpl: parseTemplatesWithFuncMap(
+			baseFuncMap(),
 			"web/templates/layout.html",
 			"web/templates/dashboard.html",
-		)),
+		),
 	}
 }
 

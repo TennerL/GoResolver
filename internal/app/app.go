@@ -4,6 +4,9 @@ package app
 import (
 	"log"
 	"net/http"
+	"strings"
+
+	"GoResolver/internal/services"
 )
 
 
@@ -20,6 +23,19 @@ func New() *App {
 
 
 func (a *App) Run() {
-	log.Println("Server running on http://localhost:8888")
-	http.ListenAndServe(":8888", a.Router)
+	settings := services.NewSettingsService()
+	baseURL := settings.GetValue("app.base_url")
+	listenAddr := settings.GetValue("app.listen_addr")
+	if listenAddr == "" {
+		listenAddr = ":8888"
+	}
+	if baseURL == "" {
+		if strings.HasPrefix(listenAddr, ":") {
+			baseURL = "http://localhost" + listenAddr
+		} else {
+			baseURL = "http://localhost:8888"
+		}
+	}
+	log.Println("Server running on", baseURL)
+	http.ListenAndServe(listenAddr, a.Router)
 }

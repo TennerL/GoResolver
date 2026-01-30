@@ -29,9 +29,14 @@ type IPTablesRule struct {
 type IPTablesRuleSpec struct {
     Table     string   // filter, nat
     Chain     string   // INPUT, PREROUTING
+    Action    string   // append, insert
+    Position  int
     Protocol  string   // tcp, udp, all
+    InInterface string
+    OutInterface string
     SourceIP  string
     DestIP    string
+    SourcePort int
     DestPort  int
 
     // Modules
@@ -39,6 +44,8 @@ type IPTablesRuleSpec struct {
     LimitRate  string
     LimitBurst string
     SynOnly    bool
+    ConnState  string
+    IcmpType   string
 
     // DNAT
     ToIP       string
@@ -46,6 +53,10 @@ type IPTablesRuleSpec struct {
 
     Target     string
     Comment    string
+    LogPrefix  string
+    LogLevel   string
+    RejectWith string
+    ExtraArgs  []string
 }
 
 

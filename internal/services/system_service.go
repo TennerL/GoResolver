@@ -15,9 +15,10 @@ func NewSystemService() *SystemService {
 
 func (s *SystemService) GetDashboardData() []models.Dashboard {
 	data := []models.Dashboard{}
+	settings := NewSettingsService()
 
 	dnsStatus := "Offline"
-	conn, err := net.DialTimeout("udp", "127.0.0.1:53", 2*time.Second)
+	conn, err := net.DialTimeout("udp", settings.GetValue("system.dns_probe_addr"), 2*time.Second)
 	if err == nil {
 		dnsStatus = "Online"
 		conn.Close()
@@ -25,11 +26,11 @@ func (s *SystemService) GetDashboardData() []models.Dashboard {
 	data = append(data, models.Dashboard{Name: "DNS", Status: dnsStatus})
 
 	vpnStatus := "Offline"
-	err = exec.Command("ping", "-c", "1", "-W", "1", "10.8.0.6").Run()
+	err = exec.Command("ping", "-c", "1", "-W", "1", settings.GetValue("vpn.healthcheck_ip")).Run()
 	if err == nil {
 		vpnStatus = "Online"
 	}
 
-	data = append(data, models.Dashboard{Name: "web.nihonsaba.intern", Status: vpnStatus})
+	data = append(data, models.Dashboard{Name: settings.GetValue("vpn.healthcheck_name"), Status: vpnStatus})
 	return data
 }

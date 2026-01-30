@@ -15,10 +15,11 @@ type ServerHandler struct {
 func NewServerHandler() *ServerHandler {
 	return &ServerHandler{
 		Service: services.NewServerService(),
-		Tmpl: template.Must(template.ParseFiles(
+		Tmpl: parseTemplatesWithFuncMap(
+			baseFuncMap(),
 			"web/templates/layout.html",
 			"web/templates/servers.html",
-		)),
+		),
 	}
 }
 

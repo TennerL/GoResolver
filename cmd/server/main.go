@@ -4,6 +4,7 @@ import (
 	"GoResolver/internal/app"
 	"GoResolver/internal/db"
 	"GoResolver/internal/logging"
+	"GoResolver/internal/services"
 	"encoding/binary"
 	"fmt"
 	"github.com/miekg/dns"
@@ -21,11 +22,10 @@ type RecordWithTTL struct {
 func main() {
 	db.Init()
 
-
 	//go startDNSServer()
 	go logging.StartNginxLogIngester(
 		db.DB,
-		"/var/log/nginx/access.db.json",
+		appSettings.GetValue("logging.nginx_access_json"),
 	)
 
 	application := app.New()
@@ -152,7 +152,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		}
 
 	case dns.TypeNS:
-		nsHosts := []string{"ns1.nsstatic.org.", "ns2.nsstatic.org."}
+		nsHosts := parseCSV(appSettings.GetValue("dns.ns_hosts"))
 		for _, ns := range nsHosts {
 			addRR(msg, fmt.Sprintf(
 				"%s 3600 IN NS %s",
@@ -163,15 +163,22 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 
 	case dns.TypeCAA:
 		addRR(msg, fmt.Sprintf(
-			`%s 3600 IN CAA 0 issue "letsencrypt.org"`,
+			`%s 3600 IN CAA 0 issue "%s"`,
 			fqdn,
+			appSettings.GetValue("dns.caa_issuer"),
 		))
 
 	case dns.TypeSOA:
+		rname := appSettings.GetValue("dns.soa_rname_template")
+		if rname == "" {
+			rname = "hostmaster.{domain}"
+		}
+		rname = strings.ReplaceAll(rname, "{domain}", fqdn)
 		addRR(msg, fmt.Sprintf(
-			"%s 3600 IN SOA ns1.nsstatic.org. hostmaster.%s 1 3600 900 604800 86400",
+			"%s 3600 IN SOA %s %s 1 3600 900 604800 86400",
 			fqdn,
-			fqdn,
+			appSettings.GetValue("dns.soa_mname"),
+			rname,
 		))
 
 	default:
@@ -251,4 +258,21 @@ func queryMultiRecords(domain, rtype string) []RecordWithTTL {
 		}
 	}
 	return result
+}
+
+var appSettings = services.NewSettingsService()
+
+func parseCSV(input string) []string {
+	parts := strings.Split(input, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
 }

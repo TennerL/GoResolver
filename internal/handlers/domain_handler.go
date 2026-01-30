@@ -16,10 +16,11 @@ type DomainsHandler struct {
 func NewDomainsHandler() *DomainsHandler {
 	return &DomainsHandler{
 		Service: services.NewDomainService(),
-		Tmpl: template.Must(template.ParseFiles(
+		Tmpl: parseTemplatesWithFuncMap(
+			baseFuncMap(),
 			"web/templates/layout.html",
 			"web/templates/domains.html",
-		)),
+		),
 	}
 }
 

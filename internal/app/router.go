@@ -19,6 +19,7 @@ func NewRouter() http.Handler {
 	serverconfiguration := handlers.NewServerConfigurationHandler()
 	login := handlers.NewLoginHandler()
 	analyticsHandler := handlers.NewAnalyticsHandler()
+	settingsHandler := handlers.NewSettingsHandler()
 
 	r.HandleFunc("/login", login.Index).Methods("GET", "POST")
 	r.HandleFunc("/logout", login.Logout).Methods("GET", "POST")
@@ -48,6 +49,7 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/analytics", RequireAuth(analyticsHandler.Index)).Methods("GET")
 	r.HandleFunc("/api/analytics", RequireAuth(analyticsHandler.API)).Methods("GET")
 	r.HandleFunc("/api/analytics/hosts", RequireAuth(analyticsHandler.Hosts)).Methods("GET")
+	r.HandleFunc("/settings", RequireAuth(settingsHandler.Index)).Methods("GET", "POST")
 
 	static, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {

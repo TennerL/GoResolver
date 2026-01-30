@@ -17,10 +17,11 @@ type LoginHandler struct {
 
 func NewLoginHandler() *LoginHandler {
 	return &LoginHandler{
-		Tmpl: template.Must(template.ParseFiles(
+		Tmpl: parseTemplatesWithFuncMap(
+			baseFuncMap(),
 			"web/templates/layout.html",
 			"web/templates/login.html",
-		)),
+		),
 		Service: services.NewLoginService(),
 	}
 }

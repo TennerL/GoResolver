@@ -342,7 +342,7 @@
             </div>
             <!-- Tab 6: IP Restrictions -->
             <div id="tab6" class="tab-content hidden">
-                <p class="text-sm text-gray-500 mb-4">Connection limits for this server IP ({{.IP}})</p>
+                <p class="text-sm text-gray-500 mb-4">Firewall rules scoped to this server IP ({{.IP}})</p>
 
                 <div class="mt-4 sm:mt-0 flex gap-3">
                     <button type="button"
@@ -388,10 +388,6 @@
                             <td class="px-4 py-3">{{.Extra}}</td>
 
                             <td class="px-4 py-3">
-                                <input type="hidden" name="table" value="{{.Table}}">
-                                <input type="hidden" name="chain" value="{{.Chain}}">
-                                <input type="hidden" name="comment" value="{{.Extra}}">
-
                                 <button type="submit"
                                         name="action_type"
                                         value="delete_rule"
@@ -433,42 +429,87 @@
                 <div class="p-6 space-y-6">
 
                 <!-- RULE TYPE -->
-                <div>
-                    <label class="text-sm font-medium">Rule Type</label>
-                    <select name="rule_type" onchange="onRuleTypeChange(this.value)"
-                            class="w-full px-3 py-2 border rounded dark:bg-slate-800">
-                    <option value="connlimit">Connection Limit</option>
-                    <option value="syn">SYN Flood Protection</option>
-                    <option value="dnat">DNAT (Port Forward)</option>
-                    <option value="ratelimit">Rate Limit</option>
-                    <option value="block">Block IP</option>
-                    <option value="allow">Allow IP</option>
-                    </select>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="text-sm font-medium">Rule Type</label>
+                        <select name="rule_type" onchange="onRuleTypeChange(this.value)"
+                                class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                        <option value="connlimit">Connection Limit</option>
+                        <option value="syn">SYN Flood Protection</option>
+                        <option value="dnat">DNAT (Port Forward)</option>
+                        <option value="ratelimit">Rate Limit</option>
+                        <option value="block">Block IP</option>
+                        <option value="allow">Allow IP</option>
+                        <option value="masquerade">Masquerade (NAT)</option>
+                        <option value="custom">Custom / Advanced</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium">Protocol</label>
+                        <select name="protocol"
+                                class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                        <option value="tcp">TCP</option>
+                        <option value="udp">UDP</option>
+                        <option value="icmp">ICMP</option>
+                        <option value="all">ALL</option>
+                        </select>
+                    </div>
                 </div>
 
-                <!-- PROTOCOL -->
-                <select name="protocol"
-                        class="w-full px-3 py-2 border rounded dark:bg-slate-800">
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-                <option value="all">ALL</option>
-                </select>
+                <!-- TABLE / CHAIN / ACTION -->
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                        <label class="text-sm font-medium">Table</label>
+                        <select name="rule_table" class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                            <option value="filter">filter</option>
+                            <option value="nat">nat</option>
+                            <option value="mangle">mangle</option>
+                            <option value="raw">raw</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium">Chain</label>
+                        <select name="rule_chain" class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                            <option value="INPUT">INPUT</option>
+                            <option value="OUTPUT">OUTPUT</option>
+                            <option value="FORWARD">FORWARD</option>
+                            <option value="PREROUTING">PREROUTING</option>
+                            <option value="POSTROUTING">POSTROUTING</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium">Action</label>
+                        <select name="rule_action" class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                            <option value="append">Append</option>
+                            <option value="insert">Insert</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium">Position</label>
+                        <input name="rule_position" type="number" min="1" placeholder="(optional)"
+                            class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                    </div>
+                </div>
 
-                <!-- DESTINATION IP -->
-                <input name="dest_ip" placeholder="Destination IP (optional)"
-                    class="px-2 py-1 rounded border dark:bg-slate-800">
-
-                <!-- HIDDEN AUTO FIELDS -->
-                <input type="hidden" name="table">
-                <input type="hidden" name="chain">
-
-
-                <!-- COMMON FIELDS -->
+                <!-- ADDRESSING -->
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <input name="source_ip" placeholder="Source IP (optional)"
                         class="px-2 py-1 rounded border dark:bg-slate-800">
+                    <input name="dest_ip" placeholder="Destination IP (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                </div>
 
-                    <input name="port" type="number" placeholder="Port (optional)"
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <input name="source_port" type="number" placeholder="Source Port (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                    <input name="port" type="number" placeholder="Destination Port (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <input name="in_interface" placeholder="In Interface (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                    <input name="out_interface" placeholder="Out Interface (optional)"
                         class="px-2 py-1 rounded border dark:bg-slate-800">
                 </div>
 
@@ -495,16 +536,49 @@
                         class="px-2 py-1 rounded border dark:bg-slate-800">
                 </div>
 
-                <!-- ACTION -->
-                <div>
-                    <label class="text-sm font-medium">Action</label>
-                    <select name="target"
-                            class="w-full px-3 py-2 border rounded dark:bg-slate-800">
-                    <option value="DROP">DROP</option>
-                    <option value="ACCEPT">ACCEPT</option>
-                    <option value="REJECT">REJECT</option>
-                    </select>
+                <!-- STATE / ICMP -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <input name="conn_state" placeholder="Conntrack state (e.g. NEW,ESTABLISHED)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                    <input name="icmp_type" placeholder="ICMP type (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
                 </div>
+
+                <!-- ACTION -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="text-sm font-medium">Target</label>
+                        <select name="target"
+                                class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                        <option value="DROP">DROP</option>
+                        <option value="ACCEPT">ACCEPT</option>
+                        <option value="REJECT">REJECT</option>
+                        <option value="LOG">LOG</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium">Reject With</label>
+                        <input name="reject_with" placeholder="(optional)"
+                            class="w-full px-3 py-2 border rounded dark:bg-slate-800">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <input name="log_prefix" placeholder="Log prefix (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                    <input name="log_level" placeholder="Log level (optional)"
+                        class="px-2 py-1 rounded border dark:bg-slate-800">
+                </div>
+
+                <input name="rule_comment" placeholder="Comment (optional)"
+                    class="px-2 py-1 rounded border dark:bg-slate-800">
+
+                <details class="rounded-lg border border-gray-200 dark:border-slate-700 p-4">
+                    <summary class="cursor-pointer text-sm font-medium">Advanced: extra iptables args</summary>
+                    <p class="text-xs text-gray-500 mt-2">Whitespace-separated args, quotes supported. Use this for any option not exposed above.</p>
+                    <textarea name="extra_args" rows="2" placeholder="-m multiport --dports 80,443"
+                        class="w-full mt-2 px-3 py-2 border rounded dark:bg-slate-800"></textarea>
+                </details>
 
                 <!-- SUBMIT -->
                 <div class="flex justify-end gap-3">
@@ -710,6 +784,8 @@
 // Con Limit modal 
 function openRuleModal() {
   document.getElementById("ruleModal").classList.remove("hidden");
+  const ruleType = document.querySelector('[name="rule_type"]');
+  if (ruleType) onRuleTypeChange(ruleType.value);
 }
 function closeRuleModal() {
   document.getElementById("ruleModal").classList.add("hidden");
@@ -721,15 +797,27 @@ function onRuleTypeChange(type) {
     if (el.dataset.rule.includes(type)) el.classList.remove("hidden");
   });
 
-  const table = document.querySelector('[name="table"]');
-  const chain = document.querySelector('[name="chain"]');
+  const table = document.querySelector('[name="rule_table"]');
+  const chain = document.querySelector('[name="rule_chain"]');
+  const target = document.querySelector('[name="target"]');
 
   if (type === "dnat") {
-    table.value = "nat";
-    chain.value = "PREROUTING";
+    if (table) table.value = "nat";
+    if (chain) chain.value = "PREROUTING";
+  } else if (type === "masquerade") {
+    if (table) table.value = "nat";
+    if (chain) chain.value = "POSTROUTING";
+  } else if (type === "custom") {
+    if (table && !table.value) table.value = "filter";
+    if (chain && !chain.value) chain.value = "INPUT";
   } else {
-    table.value = "filter";
-    chain.value = "INPUT";
+    if (table) table.value = "filter";
+    if (chain) chain.value = "INPUT";
+  }
+
+  if (target) {
+    if (type === "allow") target.value = "ACCEPT";
+    if (type === "block") target.value = "DROP";
   }
 }
 

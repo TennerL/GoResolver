@@ -18,10 +18,11 @@ type AnalyticsHandler struct {
 func NewAnalyticsHandler() *AnalyticsHandler {
 	return &AnalyticsHandler{
 		Service: services.NewAnalyticsService(),
-		Tmpl: template.Must(template.ParseFiles(
+		Tmpl: parseTemplatesWithFuncMap(
+			baseFuncMap(),
 			"web/templates/layout.html",
 			"web/templates/analytics.html",
-		)),
+		),
 	}
 }
 

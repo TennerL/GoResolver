@@ -25,11 +25,11 @@ type ServerConfigurationHandler struct {
 }
 
 func NewServerConfigurationHandler() *ServerConfigurationHandler {
-	funcMap := template.FuncMap{
+	funcMap := mergeFuncMaps(baseFuncMap(), template.FuncMap{
 		"extractPort":  extractPort,
 		"extractLimit": extractLimit,
 		"contains":     contains,
-	}
+	})
 
 	tmpl := template.Must(template.New("layout.html").
 		Funcs(funcMap).
@@ -97,7 +97,37 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 
 	conf := h.Service.GetServerConfiguration(serverID)
 	if len(conf) == 0 {
-		http.Error(w, "No server config found", http.StatusNotFound)
+		srv, err := h.Service.GetServerBasics(serverID)
+		if err != nil {
+			http.Error(w, "No server config found", http.StatusNotFound)
+			return
+		}
+
+		page := models.PageDataServerConfig{
+			Active:     "servers",
+			Data:       []models.ServerConfiguration{},
+			ServerID:   serverID,
+			ServerName: srv.Name,
+			IP:         srv.IP,
+			VPN_File:   srv.VPN_File,
+			ErrorPages: h.Service.GetServerErrorPages(serverID),
+			ErrorFiles: h.Service.GetServerErrorFiles(),
+		}
+
+		if srv.IP != "" {
+			rules, err := h.Service.ListIPTablesRules()
+			if err != nil {
+				log.Println("iptables error:", err)
+			} else {
+				page.IPTablesRules = FilterRulesForServer(rules, srv.IP)
+			}
+		}
+
+		if err := h.Tmpl.ExecuteTemplate(w, "layout", page); err != nil {
+			log.Println("template execute error:", err)
+			http.Error(w, "Template error", http.StatusInternalServerError)
+		}
+		return
 	}
 	
 	errorPages := h.Service.GetServerErrorPages(serverID)
@@ -117,7 +147,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		ErrorFiles: errorFiles,
 	}
 	rules, err := h.Service.ListIPTablesRules()
-	rulesForServer := FilterRulesForServer(rules, "87.106.24.216" ,conf[0].IP)
+	rulesForServer := FilterRulesForServer(rules, conf[0].IP)
 	if err != nil {
 		log.Println("iptables error:", err)
 	} else {
@@ -297,7 +327,8 @@ func (h *ServerConfigurationHandler) UploadErrorPage(w http.ResponseWriter, r *h
 	defer file.Close()
 
 	data, _ := io.ReadAll(file)
-	path := "/var/www/error_pages"
+	settings := services.NewSettingsService()
+	path := settings.GetValue("paths.error_pages")
 
 	ef := models.ServerErrorFiles{
 		Error_Code:  r.FormValue("error_code"),
@@ -472,22 +503,48 @@ func FilterRulesForServer(rules []models.IPTablesRule, serverIPs ...string) []mo
 }
 
 func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Request) {
-    r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form", http.StatusBadRequest)
+		return
+	}
 
-    ruleType := r.FormValue("rule_type")
+	ruleType := r.FormValue("rule_type")
 
-    port, _ := strconv.Atoi(r.FormValue("port"))
-    toPort, _ := strconv.Atoi(r.FormValue("to_port"))
+	port, _ := strconv.Atoi(r.FormValue("port"))
+	sourcePort, _ := strconv.Atoi(r.FormValue("source_port"))
+	toPort, _ := strconv.Atoi(r.FormValue("to_port"))
+	position, _ := strconv.Atoi(r.FormValue("rule_position"))
 
-    spec := models.IPTablesRuleSpec{
-        Table:    r.FormValue("table"),
-        Chain:    r.FormValue("chain"),
-        Protocol: r.FormValue("protocol"),
-        SourceIP: r.FormValue("source_ip"),
-        DestIP:   r.FormValue("dest_ip"),
-        DestPort: port,
-        Target:   r.FormValue("target"),
-    }
+	spec := models.IPTablesRuleSpec{
+		Table:       r.FormValue("rule_table"),
+		Chain:       r.FormValue("rule_chain"),
+		Action:      r.FormValue("rule_action"),
+		Position:    position,
+		Protocol:    r.FormValue("protocol"),
+		InInterface: r.FormValue("in_interface"),
+		OutInterface:r.FormValue("out_interface"),
+		SourceIP:    r.FormValue("source_ip"),
+		DestIP:      r.FormValue("dest_ip"),
+		SourcePort:  sourcePort,
+		DestPort:    port,
+		ConnState:   r.FormValue("conn_state"),
+		IcmpType:    r.FormValue("icmp_type"),
+		Target:      r.FormValue("target"),
+		LogPrefix:   r.FormValue("log_prefix"),
+		LogLevel:    r.FormValue("log_level"),
+		RejectWith:  r.FormValue("reject_with"),
+		ExtraArgs:   parseArgs(r.FormValue("extra_args")),
+	}
+
+	if spec.Table == "" || spec.Chain == "" {
+		if ruleType == "dnat" {
+			spec.Table = "nat"
+			spec.Chain = "PREROUTING"
+		} else {
+			spec.Table = "filter"
+			spec.Chain = "INPUT"
+		}
+	}
 
     switch ruleType {
 
@@ -507,11 +564,17 @@ func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Requ
         spec.SynOnly = true
         spec.Comment = fmt.Sprintf("GoResolver:%s:SYN", spec.SourceIP)
 
-    case "dnat":
-        spec.ToIP = r.FormValue("to_ip")
-        spec.ToPort = toPort
-        spec.Target = "DNAT"
-        spec.Comment = fmt.Sprintf("GoResolver:DNAT:%d", port)
+	case "dnat":
+		spec.ToIP = r.FormValue("to_ip")
+		spec.ToPort = toPort
+		spec.Target = "DNAT"
+		spec.Comment = fmt.Sprintf("GoResolver:DNAT:%d", port)
+
+	case "masquerade":
+		spec.Target = "MASQUERADE"
+		spec.Table = "nat"
+		spec.Chain = "POSTROUTING"
+		spec.Comment = "GoResolver:MASQUERADE"
 
     case "block":
         spec.Target = "DROP"
@@ -522,12 +585,84 @@ func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Requ
         spec.Comment = "GoResolver:" + spec.SourceIP + ":ALLOW"
     }
 
+	userComment := strings.TrimSpace(r.FormValue("rule_comment"))
+	spec.Comment = withRuleComment(spec.Comment, mux.Vars(r)["id"], ruleType, userComment)
+
     if err := h.Service.AddRule(spec); err != nil {
         http.Error(w, err.Error(), 500)
         return
     }
 
     redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
+}
+
+func withRuleComment(base, serverID, ruleType, userComment string) string {
+	trimmed := sanitizeComment(userComment)
+	if base == "" {
+		base = fmt.Sprintf("GoResolver:%s:%s", serverID, ruleType)
+	}
+	if trimmed != "" {
+		base = base + ":" + trimmed
+	}
+	return fmt.Sprintf("%s:%d", base, time.Now().UnixNano())
+}
+
+func sanitizeComment(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if len(input) > 80 {
+		input = input[:80]
+	}
+	// Strip control characters to keep iptables comment safe.
+	var b strings.Builder
+	for _, r := range input {
+		if r >= 32 && r != 127 {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func parseArgs(input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+
+	var args []string
+	var current strings.Builder
+	var inSingle, inDouble, escaping bool
+
+	for _, r := range input {
+		switch {
+		case escaping:
+			current.WriteRune(r)
+			escaping = false
+		case r == '\\':
+			escaping = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+		case r == ' ' || r == '\t' || r == '\n':
+			if inSingle || inDouble {
+				current.WriteRune(r)
+				continue
+			}
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
 }
 
 func (h *ServerConfigurationHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {

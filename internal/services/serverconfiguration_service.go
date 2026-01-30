@@ -122,6 +122,28 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 	return serverConfigurations
 }
 
+func (s *ServerConfigurationService) GetServerBasics(serverID string) (models.Server, error) {
+	var srv models.Server
+	var vpnBlob []byte
+	err := db.DB.QueryRow(`
+		SELECT id, name, ip, vpn_file
+		FROM servers
+		WHERE id = ?
+	`, serverID).Scan(&srv.ID, &srv.Name, &srv.IP, &vpnBlob)
+	if err != nil {
+		return srv, err
+	}
+
+	if len(vpnBlob) > 0 {
+		decrypted, err := DecryptVPN(vpnBlob)
+		if err == nil {
+			srv.VPN_File = string(decrypted)
+		}
+	}
+
+	return srv, nil
+}
+
 func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerConfiguration) error {
 	result, err := db.DB.Exec(`
 		INSERT INTO server_configuration (
@@ -571,8 +593,9 @@ func DeployNginxConfig(serverName string) error {
 
 	serverName = strings.ReplaceAll(serverName, " ", "_")
 
-	availablePath := filepath.Join("/etc/nginx/sites-available", serverName)
-	enabledPath := filepath.Join("/etc/nginx/sites-enabled", serverName)
+	settings := NewSettingsService()
+	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), serverName)
+	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), serverName)
 
 	if err := os.WriteFile(availablePath, []byte(config), 0644); err != nil {
 		return fmt.Errorf("write config failed: %w", err)
@@ -601,8 +624,9 @@ func DeployNginxConfig(serverName string) error {
 func DeleteNginxConfig(serverName string) error {
 	serverName = strings.ReplaceAll(serverName, " ", "_")
 
-	availablePath := filepath.Join("/etc/nginx/sites-available", serverName)
-	enabledPath := filepath.Join("/etc/nginx/sites-enabled", serverName)
+	settings := NewSettingsService()
+	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), serverName)
+	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), serverName)
 
 	if err := os.Remove(availablePath); err != nil {
 		return fmt.Errorf("Delete from sites-avaliable failed.")
@@ -646,9 +670,10 @@ func (s *ServerConfigurationService) GenerateVPNClientConfig(
     caPassphrase string, 
 ) (string, error) {
 
-    pkiDir := "/root/openvpn-ca/pki"
-    easyRSADir := "/root/openvpn-ca"
-    easyRSA := "/usr/share/easy-rsa/easyrsa"
+    settings := NewSettingsService()
+    pkiDir := settings.GetValue("openvpn.pki_dir")
+    easyRSADir := settings.GetValue("openvpn.ca_dir")
+    easyRSA := settings.GetValue("openvpn.easy_rsa_path")
 
     caCertPath := filepath.Join(pkiDir, "ca.crt")
     clientCertPath := filepath.Join(pkiDir, "issued", clientName+".crt")
@@ -700,7 +725,7 @@ func (s *ServerConfigurationService) GenerateVPNClientConfig(
     conf := fmt.Sprintf(`client
 dev tun
 proto udp
-remote nsstatic.org 1194
+remote %s %s
 resolv-retry infinite
 nobind
 persist-key
@@ -722,6 +747,8 @@ key-direction 1
 %s
 </key>
 `,
+        settings.GetValue("openvpn.remote_host"),
+        settings.GetValue("openvpn.remote_port"),
         string(ca),
         string(cert),
         string(key),
@@ -755,7 +782,8 @@ func (s *ServerConfigurationService) SaveVPNConfig(serverID string, config []byt
 }
 
 func (s *ServerConfigurationService) AssignStaticVPNIP(clientName, ip string) error {
-    ccdDir := "/etc/openvpn/ccd"
+    settings := NewSettingsService()
+    ccdDir := settings.GetValue("openvpn.ccd_dir")
     path := filepath.Join(ccdDir, clientName)
 
     content := fmt.Sprintf(
@@ -837,8 +865,9 @@ func (s *ServerConfigurationService) IssueCert(
 		return err
 	}
 
+	settings := NewSettingsService()
 	user := &User{
-		Email: "info@nihonsaba.net",
+		Email: settings.GetValue("acme.email"),
 		Key:   privateKey,
 	}
 
@@ -852,7 +881,10 @@ func (s *ServerConfigurationService) IssueCert(
 	}
 
 	err = client.Challenge.SetHTTP01Provider(
-		http01.NewProviderServer("127.0.0.1", "8089"),
+		http01.NewProviderServer(
+			settings.GetValue("acme.http01_host"),
+			settings.GetValue("acme.http01_port"),
+		),
 	)
 	if err != nil {
 		return err
@@ -876,8 +908,8 @@ func (s *ServerConfigurationService) IssueCert(
 		return err
 	}
 
-	certPath := filepath.Join("/etc/ssl", domain+".crt")
-	keyPath  := filepath.Join("/etc/ssl", domain+".key")
+	certPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".crt")
+	keyPath  := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
 
 	if err := os.WriteFile(certPath, certRes.Certificate, 0600); err != nil {
 		return err
@@ -920,8 +952,9 @@ func (s *ServerConfigurationService) RenewCert(siteID string) error {
 		return err
 	}
 
+	settings := NewSettingsService()
 	user := &User{
-		Email: "info@nihonsaba.net",
+		Email: settings.GetValue("acme.email"),
 		Key:   privateKey,
 	}
 
@@ -935,7 +968,10 @@ func (s *ServerConfigurationService) RenewCert(siteID string) error {
 	}
 
 	err = client.Challenge.SetHTTP01Provider(
-		http01.NewProviderServer("127.0.0.1", "8089"),
+		http01.NewProviderServer(
+			settings.GetValue("acme.http01_host"),
+			settings.GetValue("acme.http01_port"),
+		),
 	)
 	if err != nil {
 		return err
@@ -1115,7 +1151,7 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 
 
 	user := &User{
-		Email: "info@nihonsaba.net",
+		Email: NewSettingsService().GetValue("acme.email"),
 		Key:   privKey,
 	}
 
@@ -1162,8 +1198,9 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 
 
 func fsRemoveCert(domain string) {
-	certPath := filepath.Join("/etc/ssl", domain+".crt")
-	keyPath  := filepath.Join("/etc/ssl", domain+".key")
+	settings := NewSettingsService()
+	certPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".crt")
+	keyPath  := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
 
 	if err := os.Remove(certPath); err != nil {
 		log.Fatal(err)
@@ -1278,10 +1315,25 @@ func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error
         args = append(args, "-t", spec.Table)
     }
 
-    args = append(args, "-A", spec.Chain)
+    action := "-A"
+    if strings.EqualFold(spec.Action, "insert") {
+        action = "-I"
+    }
+    args = append(args, action, spec.Chain)
+    if action == "-I" && spec.Position > 0 {
+        args = append(args, strconv.Itoa(spec.Position))
+    }
 
     if spec.Protocol != "" && spec.Protocol != "all" {
         args = append(args, "-p", spec.Protocol)
+    }
+
+    if spec.InInterface != "" {
+        args = append(args, "-i", spec.InInterface)
+    }
+
+    if spec.OutInterface != "" {
+        args = append(args, "-o", spec.OutInterface)
     }
 
     if spec.SynOnly {
@@ -1294,6 +1346,10 @@ func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error
 
     if spec.DestIP != "" {
         args = append(args, "-d", spec.DestIP)
+    }
+
+    if spec.SourcePort > 0 {
+        args = append(args, "--sport", strconv.Itoa(spec.SourcePort))
     }
 
     if spec.DestPort > 0 {
@@ -1318,13 +1374,36 @@ func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error
         }
     }
 
-    if spec.Target == "DNAT" {
+    if spec.ConnState != "" {
+        args = append(args, "-m", "conntrack", "--ctstate", spec.ConnState)
+    }
+
+    if spec.IcmpType != "" {
+        args = append(args, "--icmp-type", spec.IcmpType)
+    }
+
+    hasJump := hasJumpArg(spec.ExtraArgs)
+    if len(spec.ExtraArgs) > 0 {
+        args = append(args, spec.ExtraArgs...)
+    }
+
+    if !hasJump && spec.Target == "DNAT" {
         args = append(args,
             "-j", "DNAT",
             "--to-destination", fmt.Sprintf("%s:%d", spec.ToIP, spec.ToPort),
         )
-    } else {
+    } else if !hasJump && spec.Target != "" {
         args = append(args, "-j", spec.Target)
+
+        if spec.Target == "LOG" && spec.LogPrefix != "" {
+            args = append(args, "--log-prefix", spec.LogPrefix)
+        }
+        if spec.Target == "LOG" && spec.LogLevel != "" {
+            args = append(args, "--log-level", spec.LogLevel)
+        }
+        if spec.Target == "REJECT" && spec.RejectWith != "" {
+            args = append(args, "--reject-with", spec.RejectWith)
+        }
     }
 
     if spec.Comment != "" {
@@ -1338,6 +1417,15 @@ func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error
     }
 
     return nil
+}
+
+func hasJumpArg(args []string) bool {
+    for i := 0; i < len(args); i++ {
+        if args[i] == "-j" || args[i] == "--jump" {
+            return true
+        }
+    }
+    return false
 }
 
 func (s *ServerConfigurationService) DeleteRule(chain string, num int, table string) error {
@@ -1375,4 +1463,3 @@ func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment s
     }
     return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
 }
-

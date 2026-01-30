@@ -15,7 +15,7 @@ type RecordHandler struct {
 }
 
 func NewRecordHandler() *RecordHandler {
-	funcs := template.FuncMap{
+	funcs := mergeFuncMaps(baseFuncMap(), template.FuncMap{
 		"json": func(v any) template.JS {
 			b, err := json.Marshal(v)
 			if err != nil {
@@ -23,7 +23,7 @@ func NewRecordHandler() *RecordHandler {
 			}
 			return template.JS(b)
 		},
-	}
+	})
 
 	tmpl := template.Must(
 		template.New("layout.html").

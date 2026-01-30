@@ -62,12 +62,13 @@ func (s *DomainService) GetDomains() []models.Domain {
 
 func checkNS(domain string) string {
 	nsStatus := "Offline"
+	settings := NewSettingsService()
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(domain), dns.TypeNS)
 
 	c := &dns.Client{Timeout: 2 * time.Second}
-	r, _, err := c.Exchange(m, "1.1.1.1:53") // query your authoritative server
+	r, _, err := c.Exchange(m, settings.GetValue("dns.resolver_addr"))
 	if err != nil {
 		log.Println("DNS query error for", domain, ":", err)
 		return nsStatus
@@ -76,7 +77,7 @@ func checkNS(domain string) string {
 	for _, ans := range r.Answer {
 		if ns, ok := ans.(*dns.NS); ok {
 			host := strings.TrimSuffix(strings.ToLower(ns.Ns), ".")
-			if host == "ns1.nsstatic.org" {
+			if host == strings.ToLower(settings.GetValue("dns.primary_ns")) {
 				nsStatus = "Online"
 				break
 			}
