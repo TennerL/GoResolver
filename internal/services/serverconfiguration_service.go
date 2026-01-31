@@ -10,6 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sort"
+	"math/big"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -808,7 +810,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			-- Error pages directives
 			IF(sc.proxy_intercept_errors = 1, CONCAT(
 				GROUP_CONCAT(
-				CONCAT(' error_page ', ef.error_code, ' = /', ef.Filename, ';\n') SEPARATOR ''
+				CONCAT(' error_page ', ef.error_code, ' /', ef.Filename, ';\n') SEPARATOR ''
 				)
 			, ''), ''),
 
@@ -878,6 +880,10 @@ func DeployNginxConfig(serverName string) error {
 		}
 	}
 
+	if err := ensureDefaultDenySite(); err != nil {
+		return fmt.Errorf("default deny config failed: %w", err)
+	}
+
 	testCmd := exec.Command("nginx", "-t")
 	testOut, err := testCmd.CombinedOutput()
 	if err != nil {
@@ -890,6 +896,112 @@ func DeployNginxConfig(serverName string) error {
 	}
 
 	return nil
+}
+
+func ensureDefaultDenySite() error {
+	settings := NewSettingsService()
+	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), "00-default-deny")
+	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), "00-default-deny")
+
+	certPath, keyPath, err := ensureDefaultDenyCert()
+	if err != nil {
+		return err
+	}
+
+	config := `server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    default_type text/html;
+    return 403 "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Access blocked</title><style>body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}a{color:#38bdf8;text-decoration:none} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:24px} .badge{display:inline-block;background:#ef4444;color:#fff;padding:4px 8px;border-radius:999px;font-size:12px}</style></head><body><main><div class=\"card\"><div class=\"badge\">Access denied</div><h1>Access via IP not allowed</h1><p>This host only serves configured domains. Please use a valid hostname.</p></div></main></body></html>";
+}
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name _;
+    ssl_certificate ` + certPath + `;
+    ssl_certificate_key ` + keyPath + `;
+    default_type text/html;
+    return 403 "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Access blocked</title><style>body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}a{color:#38bdf8;text-decoration:none} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:24px} .badge{display:inline-block;background:#ef4444;color:#fff;padding:4px 8px;border-radius:999px;font-size:12px}</style></head><body><main><div class=\"card\"><div class=\"badge\">Access denied</div><h1>Access via IP not allowed</h1><p>This host only serves configured domains. Please use a valid hostname.</p></div></main></body></html>";
+}
+`
+
+	if err := os.WriteFile(availablePath, []byte(config), 0644); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(enabledPath); os.IsNotExist(err) {
+		if err := os.Symlink(availablePath, enabledPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDefaultDenyCert() (string, string, error) {
+	settings := NewSettingsService()
+	sslDir := settings.GetValue("paths.ssl_dir")
+	if sslDir == "" {
+		sslDir = "/etc/ssl"
+	}
+	certPath := filepath.Join(sslDir, "gr-default-deny.crt")
+	keyPath := filepath.Join(sslDir, "gr-default-deny.key")
+
+	if _, err := os.Stat(certPath); err == nil {
+		if _, err := os.Stat(keyPath); err == nil {
+			return certPath, keyPath, nil
+		}
+	}
+
+	if err := os.MkdirAll(sslDir, 0755); err != nil {
+		return "", "", err
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", err
+	}
+
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return "", "", err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: "GoResolver Default Deny",
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().AddDate(5, 0, 0),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:  []string{"localhost"},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return "", "", err
+	}
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return "", "", err
+	}
+
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", "", err
+	}
+	defer keyOut.Close()
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)}); err != nil {
+		return "", "", err
+	}
+
+	return certPath, keyPath, nil
 }
 
 func DeleteNginxConfig(serverName string) error {
