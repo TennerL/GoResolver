@@ -5,6 +5,8 @@ type PageData struct {
 	Data   any
 	DomainID string
 	ServerID string
+	SuggestedIP string
+	Servers []Server
 }
 
 type IPTablesRule struct {
@@ -86,6 +88,7 @@ type PageDataServerConfig struct {
 	Sites       []ServerConfiguration
 
 	IPTablesRules []IPTablesRule 
+	DDoSPolicy   DDoSPolicy
 }
 
 // type PageDataServerConfig struct {

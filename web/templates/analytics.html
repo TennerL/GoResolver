@@ -24,6 +24,19 @@
     </div>
 
     <div class="flex flex-col items-center">
+      <label class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">IP filter</label>
+      <select 
+        id="ipFilter" 
+        class="w-48 px-3 py-2 rounded-lg border border-gray-300 dark:border-slate-700 dark:bg-slate-800 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+      >
+        <option value="">All</option>
+        <option value="genuine">Genuine</option>
+        <option value="suspicious">Suspicious</option>
+        <option value="unknown">Unknown</option>
+      </select>
+    </div>
+
+    <div class="flex flex-col items-center">
       <button 
         id="applyBtn" 
         class="px-5 py-2 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 shadow-md transition"
@@ -54,9 +67,27 @@
       <div id="latencyChart" class="h-72"></div>
     </div>
   </div>
+
+  <div class="mt-8 rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold">IP Reputation</h2>
+      <span class="text-xs text-gray-500 dark:text-gray-400">Unique IPs based on recent traffic</span>
+    </div>
+    <div id="ipList" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+  </div>
+
+  <div class="mt-8 rounded-xl shadow p-4 bg-gray-200 dark:bg-slate-800">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold">IP Locations</h2>
+      <span class="text-xs text-gray-500 dark:text-gray-400">Geo lookup cached to avoid rate limits</span>
+    </div>
+    <div id="ipMap" class="h-96 rounded-xl overflow-hidden"></div>
+  </div>
 </div>
 
+<link rel="stylesheet" href="{{ setting "cdn.leaflet_css" }}">
 <script src="{{ setting "cdn.echarts" }}"></script>
+<script src="{{ setting "cdn.leaflet_js" }}"></script>
 
 <script>
 
@@ -69,6 +100,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   const hostSelect = document.getElementById('host');
   const rangeInput = document.getElementById('range');
   const applyBtn   = document.getElementById('applyBtn');
+  const ipFilter   = document.getElementById('ipFilter');
+  const mapEl      = document.getElementById('ipMap');
+
+  const map = L.map(mapEl, { scrollWheelZoom: false }).setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+  const markerLayer = L.layerGroup().addTo(map);
 
   async function loadHosts() {
     try {
@@ -85,13 +125,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-    async function fetchData() {
+    async function fetchCharts() {
         const range = rangeInput.value;
         const host  = hostSelect.value;
         try {
         const res = await fetch(`/api/analytics?range=${range}&host=${encodeURIComponent(host)}`);
         const data = await res.json();
-        console.log("Analytics data:", data); 
         renderRequests(data.requests_over_time);
         renderStatus(data.status_codes);
         renderUris(data.top_uris);
@@ -99,6 +138,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         } catch (err) {
         console.error('Failed to fetch analytics:', err);
         }
+    }
+
+    async function fetchData() {
+        const range = rangeInput.value;
+        const host  = hostSelect.value;
+        const filter = ipFilter.value;
+        await fetchCharts();
+        await fetchIPs(range, host, filter);
+        await fetchGeo(range, host);
     }
 
 
@@ -166,13 +214,82 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+  async function fetchIPs(range, host, filter) {
+    const list = document.getElementById('ipList');
+    list.innerHTML = '';
+    try {
+      const res = await fetch(`/api/analytics/ips?range=${range}&host=${encodeURIComponent(host)}&filter=${encodeURIComponent(filter)}`);
+      const ips = await res.json();
+      if (!Array.isArray(ips) || ips.length === 0) {
+        list.innerHTML = '<div class="text-sm text-gray-500 dark:text-gray-400">No IPs found for this filter.</div>';
+        return;
+      }
+      ips.forEach(entry => {
+        const card = document.createElement('div');
+        card.className = 'bg-white dark:bg-slate-900 rounded-xl p-4 shadow flex items-center justify-between';
+        const badgeClass = entry.verdict === 'suspicious'
+          ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400'
+          : entry.verdict === 'genuine'
+            ? 'bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400'
+            : 'bg-gray-200 text-gray-700 dark:bg-slate-700 dark:text-gray-300';
+        card.innerHTML = `
+          <div>
+            <div class="text-sm font-semibold">${entry.ip}</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Score: ${entry.score ?? 0} · Reports: ${entry.reports ?? 0}
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Host: ${Array.isArray(entry.hostnames) && entry.hostnames.length > 0 ? entry.hostnames.join(', ') : '—'}
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              ISP: ${entry.isp ? entry.isp : '—'}
+            </div>
+          </div>
+          <span class="px-3 py-1 text-xs font-semibold rounded-full ${badgeClass}">
+            ${entry.verdict || 'unknown'}
+          </span>
+        `;
+        list.appendChild(card);
+      });
+    } catch (err) {
+      console.error('Failed to load IP reputation:', err);
+      list.innerHTML = '<div class="text-sm text-gray-500 dark:text-gray-400">Failed to load IP reputation.</div>';
+    }
+  }
+
+  async function fetchGeo(range, host) {
+    markerLayer.clearLayers();
+    try {
+      const res = await fetch(`/api/analytics/ip-geo?range=${range}&host=${encodeURIComponent(host)}`);
+      const points = await res.json();
+      if (!Array.isArray(points) || points.length === 0) {
+        return;
+      }
+      const bounds = [];
+      points.forEach(p => {
+        if (typeof p.lat !== 'number' || typeof p.lon !== 'number') return;
+        const marker = L.marker([p.lat, p.lon]);
+        const label = `${p.ip}${p.city || p.region || p.country ? ' — ' + [p.city, p.region, p.country].filter(Boolean).join(', ') : ''}`;
+        marker.bindPopup(label);
+        marker.addTo(markerLayer);
+        bounds.push([p.lat, p.lon]);
+      });
+      if (bounds.length > 0) {
+        map.fitBounds(bounds, { padding: [24, 24] });
+      }
+    } catch (err) {
+      console.error('Failed to load IP geo:', err);
+    }
+  }
+
   applyBtn.addEventListener('click', fetchData);
+  ipFilter.addEventListener('change', fetchData);
 
   await loadHosts();
   fetchData();
 
-  // Auto-refresh every 5s
-  setInterval(fetchData, 5000);
+  // Auto-refresh charts every 5s (IP reputation only refreshes on Apply/filter change)
+  setInterval(fetchCharts, 5000);
 });
 </script>
 {{ end }}

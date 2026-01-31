@@ -44,3 +44,18 @@ type ServerErrorFiles struct {
 	File 		 []byte
 	Path         string
 }
+
+type DDoSPolicy struct {
+	ServerID       string
+	Enabled        bool
+	Mode           string
+	Preset         string
+	RateLimit      int
+	Burst          int
+	ConnLimit      int
+	SynRate        int
+	SynBurst       int
+	ChallengeDelay int
+	CookieTTL      int
+	Whitelist      string
+}

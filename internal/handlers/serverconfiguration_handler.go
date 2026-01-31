@@ -19,6 +19,23 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
+func valueAt(values []string, idx int) string {
+	if idx >= 0 && idx < len(values) {
+		return values[idx]
+	}
+	return ""
+}
+
+func maxLen(slices ...[]string) int {
+	max := 0
+	for _, s := range slices {
+		if len(s) > max {
+			max = len(s)
+		}
+	}
+	return max
+}
+
 type ServerConfigurationHandler struct {
 	Tmpl    *template.Template
 	Service *services.ServerConfigurationService
@@ -96,6 +113,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 	}
 
 	conf := h.Service.GetServerConfiguration(serverID)
+	policy, _ := h.Service.GetDDoSPolicy(serverID)
 	if len(conf) == 0 {
 		srv, err := h.Service.GetServerBasics(serverID)
 		if err != nil {
@@ -112,6 +130,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 			VPN_File:   srv.VPN_File,
 			ErrorPages: h.Service.GetServerErrorPages(serverID),
 			ErrorFiles: h.Service.GetServerErrorFiles(),
+			DDoSPolicy: policy,
 		}
 
 		if srv.IP != "" {
@@ -145,6 +164,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		VPN_File:   vpnText, 
 		ErrorPages: errorPages,
 		ErrorFiles: errorFiles,
+		DDoSPolicy: policy,
 	}
 	rules, err := h.Service.ListIPTablesRules()
 	rulesForServer := FilterRulesForServer(rules, conf[0].IP)
@@ -174,6 +194,7 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 
 	ids := r.Form["id[]"]
 	topServerName := r.FormValue("top_server_name")
+	vpnIP := strings.TrimSpace(r.FormValue("vpn_ip"))
 	vpnText := r.FormValue("vpn_file")
 	vpnBytes := []byte(vpnText)
 
@@ -185,25 +206,27 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	proxyErrors := r.Form["proxy_intercept_errors[]"]
 	websocketsEnabled := r.Form["Websockets[]"]
 
-	for i := range ids {
-		serverName := strings.TrimSpace(serverNames[i])
-		if ids[i] == "" && serverName == "" {
+	n := maxLen(ids, serverNames, serverPorts, sslEnabled, sslRedirect, proxyPassPorts, proxyErrors, websocketsEnabled)
+	for i := 0; i < n; i++ {
+		idStr := valueAt(ids, i)
+		serverName := strings.TrimSpace(valueAt(serverNames, i))
+		if idStr == "" && serverName == "" {
 			continue
 		}
 
-		id, _ := strconv.Atoi(ids[i])
-		serverPort, _ := strconv.Atoi(serverPorts[i])
-		ssl, _ := strconv.Atoi(sslEnabled[i])
-		ssl_redirect, _ := strconv.Atoi(sslRedirect[i])
-		proxyPort, _ := strconv.Atoi(proxyPassPorts[i])
-		proxyErr, _ := strconv.Atoi(proxyErrors[i])
-		websockets, _ := strconv.Atoi(websocketsEnabled[i])
+		id, _ := strconv.Atoi(idStr)
+		serverPort, _ := strconv.Atoi(valueAt(serverPorts, i))
+		ssl, _ := strconv.Atoi(valueAt(sslEnabled, i))
+		ssl_redirect, _ := strconv.Atoi(valueAt(sslRedirect, i))
+		proxyPort, _ := strconv.Atoi(valueAt(proxyPassPorts, i))
+		proxyErr, _ := strconv.Atoi(valueAt(proxyErrors, i))
+		websockets, _ := strconv.Atoi(valueAt(websocketsEnabled, i))
 
-		if ids[i] == "" {
+		if idStr == "" {
 			// INSERT new server config
 			err := h.Service.InsertServerConfiguration(models.ServerConfiguration{
 				ServerID:               serverID,
-				Server_Name:            serverNames[i],
+				Server_Name:            serverName,
 				Server_Port:            serverPort,
 				SSL_Enabled:            ssl,
 				SSL_Redirect:           ssl_redirect,
@@ -221,8 +244,9 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 			err := h.Service.UpdateServerConfiguration(models.ServerConfiguration{
 				ID:                     id,
 				Name:                   topServerName,
+				IP:                     vpnIP,
 				ServerID:               serverID,
-				Server_Name:            serverNames[i],
+				Server_Name:            serverName,
 				Server_Port:            serverPort,
 				SSL_Enabled:            ssl,
 				SSL_Redirect:           ssl_redirect,
@@ -246,9 +270,9 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	epSiteIDs := r.Form["site_id[]"]
 	epEnabledArr := r.Form["enabled[]"]
 
-	n := max(len(epIDs), len(efIDs), len(epSiteIDs), len(epEnabledArr))
+	nErrPages := maxLen(epIDs, efIDs, epSiteIDs, epEnabledArr)
 
-	for i := 0; i < n; i++ {
+	for i := 0; i < nErrPages; i++ {
 		id := ""
 		if i < len(epIDs) {
 			id = epIDs[i]
@@ -291,20 +315,42 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	efErrorCodes := r.Form["error_code[]"]
 	efResponseTypes := r.Form["response_type[]"]
 
-	for i := 0; i < len(efID); i++ {
-		if efID[i] == "" {
+	nErrFiles := maxLen(efID, efErrorCodes, efResponseTypes)
+	for i := 0; i < nErrFiles; i++ {
+		id := valueAt(efID, i)
+		if id == "" {
+			continue
+		}
+
+		errorCode := strings.TrimSpace(valueAt(efErrorCodes, i))
+		responseType := strings.TrimSpace(valueAt(efResponseTypes, i))
+		if errorCode == "" || responseType == "" {
 			continue
 		}
 
 		err := h.Service.UpdateErrorFiles(models.ServerErrorFiles{
-			ID:           efID[i],
-			Error_Code:   efErrorCodes[i],
-			ResponseType: efResponseTypes[i],
+			ID:           id,
+			Error_Code:   errorCode,
+			ResponseType: responseType,
 		})
 
 		if err != nil {
 			log.Println("Update error files failed:", err)
 			http.Error(w, "Update failed", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := h.applyDDoSFromForm(r, serverID); err != nil {
+		http.Error(w, "Failed to apply DDoS policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if vpnIP != "" {
+		clientName := fmt.Sprintf("client-%s", serverID)
+		if err := h.Service.AssignStaticVPNIP(clientName, vpnIP); err != nil {
+			log.Println("Update VPN IP failed:", err)
+			http.Error(w, "Update VPN IP failed", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -741,7 +787,115 @@ func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *h
 		return
 	}
 
+	if err := h.Service.UpdateServerIP(serverID, vpn_ip); err != nil {
+		http.Error(w, "Failed to update server ip:"+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	redirectWithTab(w, r, mux.Vars(r)["id"], "tab2")
+}
+
+func (h *ServerConfigurationHandler) UpdateDDoS(w http.ResponseWriter, r *http.Request) {
+	serverID := mux.Vars(r)["id"]
+	if serverID == "" {
+		http.Error(w, "No server id supplied", http.StatusBadRequest)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.applyDDoSFromForm(r, serverID); err != nil {
+		http.Error(w, "Failed to apply DDoS policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	redirectWithTab(w, r, serverID, "tab7")
+}
+
+func (h *ServerConfigurationHandler) applyDDoSFromForm(r *http.Request, serverID string) error {
+	enabled := r.FormValue("ddos_enabled") == "1"
+	mode := r.FormValue("ddos_mode")
+	preset := r.FormValue("ddos_preset")
+	whitelist := strings.TrimSpace(r.FormValue("ddos_whitelist"))
+
+	rateLimit, _ := strconv.Atoi(r.FormValue("ddos_rate_limit"))
+	burst, _ := strconv.Atoi(r.FormValue("ddos_burst"))
+	connLimit, _ := strconv.Atoi(r.FormValue("ddos_conn_limit"))
+	synRate, _ := strconv.Atoi(r.FormValue("ddos_syn_rate"))
+	synBurst, _ := strconv.Atoi(r.FormValue("ddos_syn_burst"))
+	challengeDelay, _ := strconv.Atoi(r.FormValue("ddos_challenge_delay"))
+	cookieTTL, _ := strconv.Atoi(r.FormValue("ddos_cookie_ttl"))
+
+	if preset != "custom" {
+		switch preset {
+		case "low":
+			rateLimit = 20
+			burst = 40
+			connLimit = 100
+			synRate = 20
+			synBurst = 40
+		case "high":
+			rateLimit = 5
+			burst = 10
+			connLimit = 25
+			synRate = 5
+			synBurst = 10
+		default:
+			preset = "medium"
+			rateLimit = 10
+			burst = 20
+			connLimit = 50
+			synRate = 10
+			synBurst = 20
+		}
+	}
+
+	if challengeDelay <= 0 {
+		challengeDelay = 5
+	}
+	if cookieTTL <= 0 {
+		cookieTTL = 3600
+	}
+
+	policy := models.DDoSPolicy{
+		ServerID:       serverID,
+		Enabled:        enabled,
+		Mode:           mode,
+		Preset:         preset,
+		RateLimit:      rateLimit,
+		Burst:          burst,
+		ConnLimit:      connLimit,
+		SynRate:        synRate,
+		SynBurst:       synBurst,
+		ChallengeDelay: challengeDelay,
+		CookieTTL:      cookieTTL,
+		Whitelist:      whitelist,
+	}
+
+	if err := h.Service.SaveDDoSPolicy(policy); err != nil {
+		return err
+	}
+
+	if err := h.Service.ApplyDDoSIptables(serverID, policy); err != nil {
+		return err
+	}
+
+	conf := h.Service.GetServerConfiguration(serverID)
+	seen := map[string]bool{}
+	for _, c := range conf {
+		if c.Server_Name == "" || seen[c.Server_Name] {
+			continue
+		}
+		seen[c.Server_Name] = true
+		if err := services.DeployNginxConfig(c.Server_Name); err != nil {
+			log.Println("nginx deploy failed:", err)
+		}
+	}
+
+	return nil
 }
 
 

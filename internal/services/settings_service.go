@@ -31,8 +31,6 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "dns.soa_mname", Label: "SOA MNAME", Group: "DNS", Help: "Primary name server for SOA", Default: "ns1.nsstatic.org."},
 	{Key: "dns.soa_rname_template", Label: "SOA RNAME template", Group: "DNS", Help: "Use {domain} placeholder", Default: "hostmaster.{domain}"},
 	{Key: "system.dns_probe_addr", Label: "DNS probe address", Group: "System", Help: "Used for dashboard DNS status", Default: "127.0.0.1:53"},
-	{Key: "vpn.healthcheck_ip", Label: "VPN healthcheck IP", Group: "System", Help: "Ping target for VPN status", Default: "10.8.0.6"},
-	{Key: "vpn.healthcheck_name", Label: "VPN healthcheck label", Group: "System", Help: "Displayed name for VPN status", Default: "web.nihonsaba.intern"},
 	{Key: "paths.error_pages", Label: "Error pages path", Group: "Paths", Help: "Filesystem path for custom error pages", Default: "/var/www/error_pages"},
 	{Key: "paths.nginx_sites_available", Label: "Nginx sites-available", Group: "Paths", Help: "Nginx sites-available directory", Default: "/etc/nginx/sites-available"},
 	{Key: "paths.nginx_sites_enabled", Label: "Nginx sites-enabled", Group: "Paths", Help: "Nginx sites-enabled directory", Default: "/etc/nginx/sites-enabled"},
@@ -49,6 +47,12 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "cdn.tailwind", Label: "Tailwind CDN URL", Group: "CDN", Help: "Tailwind CDN script URL", Default: "https://cdn.tailwindcss.com"},
 	{Key: "cdn.alpine", Label: "Alpine.js CDN URL", Group: "CDN", Help: "Alpine.js CDN script URL", Default: "https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"},
 	{Key: "cdn.echarts", Label: "ECharts CDN URL", Group: "CDN", Help: "ECharts CDN script URL", Default: "https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"},
+	{Key: "cdn.leaflet_js", Label: "Leaflet JS CDN URL", Group: "CDN", Help: "Leaflet JS script URL", Default: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"},
+	{Key: "cdn.leaflet_css", Label: "Leaflet CSS CDN URL", Group: "CDN", Help: "Leaflet CSS stylesheet URL", Default: "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"},
+	{Key: "abuseipdb.api_key", Label: "AbuseIPDB API key", Group: "Security", Help: "API key for IP reputation lookups", Default: ""},
+	{Key: "abuseipdb.risk_threshold", Label: "AbuseIPDB risk threshold", Group: "Security", Help: "Minimum score to classify as suspicious", Default: "50"},
+	{Key: "abuseipdb.max_age_days", Label: "AbuseIPDB max age days", Group: "Security", Help: "Max age of reports when querying AbuseIPDB", Default: "90"},
+	{Key: "abuseipdb.cache_ttl_hours", Label: "AbuseIPDB cache TTL (hours)", Group: "Security", Help: "How long to cache reputation lookups", Default: "24"},
 }
 
 func (s *SettingsService) EnsureTable() error {

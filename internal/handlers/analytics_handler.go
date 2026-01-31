@@ -97,3 +97,44 @@ func (h *AnalyticsHandler) Hosts(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(hosts)
 }
+
+func (h *AnalyticsHandler) IPs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	minutes := 60
+	host := q.Get("host")
+	filter := q.Get("filter")
+	if v := q.Get("range"); v != "" {
+		if m, err := strconv.Atoi(v); err == nil && m > 0 {
+			minutes = m
+		}
+	}
+
+	ips, err := h.Service.IPReputationList(minutes, host, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ips)
+}
+
+func (h *AnalyticsHandler) IPGeo(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	minutes := 60
+	host := q.Get("host")
+	if v := q.Get("range"); v != "" {
+		if m, err := strconv.Atoi(v); err == nil && m > 0 {
+			minutes = m
+		}
+	}
+
+	points, err := h.Service.IPGeoPoints(minutes, host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(points)
+}

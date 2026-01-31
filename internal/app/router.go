@@ -36,6 +36,7 @@ func NewRouter() http.Handler {
 	// Servers 
 	r.HandleFunc("/servers", RequireAuth(servers.Index)).Methods("GET")
 	r.HandleFunc("/servers/new", RequireAuth(servers.AddServer)).Methods("POST")
+	r.HandleFunc("/servers/{id:[0-9]+}/delete", RequireAuth(servers.Delete)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(serverconfiguration.Index)).Methods("GET")
 	r.HandleFunc(
 		"/servers/{id:[0-9]+}/server_configuration",
@@ -49,6 +50,8 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/analytics", RequireAuth(analyticsHandler.Index)).Methods("GET")
 	r.HandleFunc("/api/analytics", RequireAuth(analyticsHandler.API)).Methods("GET")
 	r.HandleFunc("/api/analytics/hosts", RequireAuth(analyticsHandler.Hosts)).Methods("GET")
+	r.HandleFunc("/api/analytics/ips", RequireAuth(analyticsHandler.IPs)).Methods("GET")
+	r.HandleFunc("/api/analytics/ip-geo", RequireAuth(analyticsHandler.IPGeo)).Methods("GET")
 	r.HandleFunc("/settings", RequireAuth(settingsHandler.Index)).Methods("GET", "POST")
 
 	static, err := fs.Sub(web.StaticFS, "static")

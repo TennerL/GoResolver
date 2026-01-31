@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"GoResolver/internal/models"
 	"GoResolver/internal/services"
+	"github.com/gorilla/mux"
 )
 
 type ServerHandler struct {
@@ -24,9 +25,11 @@ func NewServerHandler() *ServerHandler {
 }
 
 func (h *ServerHandler) Index(w http.ResponseWriter, r *http.Request) {
+	suggestedIP, _ := h.Service.SuggestNextVPNIP()
 	page := models.PageData{
 		Active: "servers",
 		Data: h.Service.GetServers(),
+		SuggestedIP: suggestedIP,
 	}
 
 	h.Tmpl.ExecuteTemplate(w, "layout", page)
@@ -50,4 +53,24 @@ func (h *ServerHandler) AddServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w,r, "/servers", http.StatusSeeOther)
+}
+
+func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serverID := mux.Vars(r)["id"]
+	if serverID == "" {
+		http.Error(w, "No id supplied", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Service.DeleteServer(serverID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/servers", http.StatusSeeOther)
 }

@@ -25,12 +25,16 @@ func (s *SystemService) GetDashboardData() []models.Dashboard {
 	}
 	data = append(data, models.Dashboard{Name: "DNS", Status: dnsStatus})
 
-	vpnStatus := "Offline"
-	err = exec.Command("ping", "-c", "1", "-W", "1", settings.GetValue("vpn.healthcheck_ip")).Run()
-	if err == nil {
-		vpnStatus = "Online"
-	}
+	healthName := settings.GetValue("vpn.healthcheck_name")
+	healthIP := settings.GetValue("vpn.healthcheck_ip")
+	if healthName != "" && healthIP != "" {
+		vpnStatus := "Offline"
+		err = exec.Command("ping", "-c", "1", "-W", "1", healthIP).Run()
+		if err == nil {
+			vpnStatus = "Online"
+		}
 
-	data = append(data, models.Dashboard{Name: settings.GetValue("vpn.healthcheck_name"), Status: vpnStatus})
+		data = append(data, models.Dashboard{Name: healthName, Status: vpnStatus})
+	}
 	return data
 }

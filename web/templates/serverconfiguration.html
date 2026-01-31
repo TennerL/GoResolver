@@ -15,10 +15,11 @@
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab4">Certificates</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab5">Custom Errors</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab6">Networking & IP-Restrictions</button>
+        <button type="button" class="{{ $tabBtnClass }}" data-tab="tab7">DDoS Protection</button>
     </nav>
 </div>
 
-<form method="POST" action="/servers/{{ .ServerID }}/server_configuration">
+<form id="serverConfigForm" method="POST" action="/servers/{{ .ServerID }}/server_configuration">
     <input type="hidden" name="active_tab" id="active_tab" value="tab1">
 
     <div class="flex gap-6">
@@ -104,29 +105,29 @@
                                     {{ $item.ID }}
                                     <input class="editable" type="hidden" name="id[]" value="{{ $item.ID }}">
                                 </td>
-                                <td class="px-6 py-4"><input name="server_name[]" value="{{ $item.Server_Name }}" class="{{ $tableInputClass }}"></td>
-                                <td class="px-6 py-4"><input name="server_port[]" type="number" value="{{ $item.Server_Port }}" class="{{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="server_name[]" value="{{ $item.Server_Name }}" class="editable {{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="server_port[]" type="number" value="{{ $item.Server_Port }}" class="editable {{ $tableInputClass }}"></td>
                                 <td class="px-6 py-4">
-                                    <select name="ssl_enabled[]" class="{{ $selectClass }}">
+                                    <select name="ssl_enabled[]" class="editable {{ $selectClass }}">
                                         <option value="0" {{ if eq $item.SSL_Enabled 0 }}selected{{ end }}>No</option>
                                         <option value="1" {{ if eq $item.SSL_Enabled 1 }}selected{{ end }}>Yes</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4">
-                                    <select name="ssl_redirect[]" class="{{ $selectClass }}">
+                                    <select name="ssl_redirect[]" class="editable {{ $selectClass }}">
                                         <option value="0" {{ if eq $item.SSL_Redirect 0 }}selected{{ end }}>No</option>
                                         <option value="1" {{ if eq $item.SSL_Redirect 1 }}selected{{ end }}>Yes</option>
                                     </select>
                                 </td>
-                                <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" value="{{ $item.Proxy_Pass_Port }}" class="{{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" value="{{ $item.Proxy_Pass_Port }}" class="editable {{ $tableInputClass }}"></td>
                                 <td class="px-6 py-4">
-                                    <select name="proxy_intercept_errors[]" class="{{ $selectClass }}">
+                                    <select name="proxy_intercept_errors[]" class="editable {{ $selectClass }}">
                                         <option value="0" {{ if eq $item.Proxy_Intercept_Errors 0 }}selected{{ end }}>Off</option>
                                         <option value="1" {{ if eq $item.Proxy_Intercept_Errors 1 }}selected{{ end }}>On</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4">
-                                    <select name="Websockets[]" class="{{ $selectClass }}">
+                                    <select name="Websockets[]" class="editable {{ $selectClass }}">
                                         <option value="0" {{ if eq $item.Websockets 0 }}selected{{ end }}>Off</option>
                                         <option value="1" {{ if eq $item.Websockets 1 }}selected{{ end }}>On</option>
                                     </select>
@@ -142,27 +143,27 @@
                                 <td class="px-6 py-4 text-gray-400">
                                     <input type="hidden" name="id[]" value="">New
                                 </td>
-                                <td class="px-6 py-4"><input name="server_name[]" placeholder="example.com" class="{{ $tableInputClass }}"></td>
-                                <td class="px-6 py-4"><input name="server_port[]" type="number" placeholder="80" class="{{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="server_name[]" placeholder="example.com" class="editable {{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="server_port[]" type="number" placeholder="80" class="editable {{ $tableInputClass }}"></td>
                                 <td class="px-6 py-4">
-                                    <select name="ssl_enabled[]" class="{{ $selectClass }}">
+                                    <select name="ssl_enabled[]" class="editable {{ $selectClass }}">
                                         <option value="0">No</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4">
-                                    <select name="ssl_redirect[]" class="{{ $selectClass }}">
+                                    <select name="ssl_redirect[]" class="editable {{ $selectClass }}">
                                         <option value="0">No</option>
                                     </select>
                                 </td>
-                                <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" placeholder="8080" class="{{ $tableInputClass }}"></td>
+                                <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" placeholder="8080" class="editable {{ $tableInputClass }}"></td>
                                 <td class="px-6 py-4">
-                                    <select name="proxy_intercept_errors[]" class="{{ $selectClass }}">
+                                    <select name="proxy_intercept_errors[]" class="editable {{ $selectClass }}">
                                         <option value="0">Off</option>
                                         <option value="1">On</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4">
-                                    <select name="Websockets[]" class="{{ $selectClass }}">
+                                    <select name="Websockets[]" class="editable {{ $selectClass }}">
                                         <option value="0">Off</option>
                                         <option value="1">On</option>
                                     </select>
@@ -406,13 +407,89 @@
                     </table>
                 </div>
             </div>
+
+            <!-- Tab 7: DDoS -->
+            <div id="tab7" class="tab-content hidden">
+                <p class="text-sm text-gray-500 mb-6">Configure DDoS protection for this server</p>
+
+                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md p-6 space-y-6">
+                    <div class="flex items-center gap-4">
+                        <label class="font-medium">Enable DDoS Protection</label>
+                        <input type="checkbox" name="ddos_enabled" value="1" {{ if .DDoSPolicy.Enabled }}checked{{ end }}>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Mode</label>
+                            <select name="ddos_mode" class="{{ $selectClass }}">
+                                <option value="off" {{ if eq .DDoSPolicy.Mode "off" }}selected{{ end }}>Off</option>
+                                <option value="challenge" {{ if eq .DDoSPolicy.Mode "challenge" }}selected{{ end }}>Challenge (cookie + delay)</option>
+                            </select>
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Preset</label>
+                            <select name="ddos_preset" class="{{ $selectClass }}">
+                                <option value="low" {{ if eq .DDoSPolicy.Preset "low" }}selected{{ end }}>Low</option>
+                                <option value="medium" {{ if or (eq .DDoSPolicy.Preset "") (eq .DDoSPolicy.Preset "medium") }}selected{{ end }}>Medium</option>
+                                <option value="high" {{ if eq .DDoSPolicy.Preset "high" }}selected{{ end }}>High</option>
+                                <option value="custom" {{ if eq .DDoSPolicy.Preset "custom" }}selected{{ end }}>Custom</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Rate limit (req/s)</label>
+                            <input name="ddos_rate_limit" type="number" value="{{ .DDoSPolicy.RateLimit }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Burst</label>
+                            <input name="ddos_burst" type="number" value="{{ .DDoSPolicy.Burst }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Conn limit (per IP)</label>
+                            <input name="ddos_conn_limit" type="number" value="{{ .DDoSPolicy.ConnLimit }}" class="{{ $inputClass }}">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">SYN rate (req/s)</label>
+                            <input name="ddos_syn_rate" type="number" value="{{ .DDoSPolicy.SynRate }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">SYN burst</label>
+                            <input name="ddos_syn_burst" type="number" value="{{ .DDoSPolicy.SynBurst }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Challenge delay (seconds)</label>
+                            <input name="ddos_challenge_delay" type="number" value="{{ .DDoSPolicy.ChallengeDelay }}" class="{{ $inputClass }}">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Challenge cookie TTL (seconds)</label>
+                            <input name="ddos_cookie_ttl" type="number" value="{{ .DDoSPolicy.CookieTTL }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Whitelist (CIDR/IP, comma separated)</label>
+                            <input name="ddos_whitelist" value="{{ .DDoSPolicy.Whitelist }}" class="{{ $inputClass }}">
+                        </div>
+                    </div>
+
+                    <div class="text-sm text-gray-500">
+                        DDoS settings are saved with the main Save button on the right.
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Sidebar with shared button class -->
         <aside class="w-48 shrink-0">
             <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md p-4 flex flex-col gap-3 sticky top-6">
                 <button type="button" id="editBtn" class="{{ $btnClass }} border-blue-300 dark:border-blue-600 hover:bg-blue-100 dark:hover:bg-blue-800">Edit</button>
-                <button type="submit" name="action_type" value="update" id="saveBtn" hidden class="{{ $btnClass }} border-green-300 dark:border-green-600 hover:bg-green-100 dark:hover:bg-green-800">Save</button>
+                <button type="submit" form="serverConfigForm" name="action_type" value="update" id="saveBtn" hidden class="{{ $btnClass }} border-green-300 dark:border-green-600 hover:bg-green-100 dark:hover:bg-green-800">Save</button>
                 <button type="button" id="cancelBtn" hidden class="{{ $btnClass }} border-red-300 dark:border-red-600 hover:bg-red-100 dark:hover:bg-red-800">Cancel</button>
             </div>
         </aside>
@@ -711,9 +788,25 @@
     const btnDeleteSite = document.querySelectorAll(".btndelete");
     const originalValues = [];
 
-    editableFields.forEach(el => {
-        el.disabled = true;
-        el.classList.add("opacity-60");
+    function setViewMode() {
+        editableFields.forEach(el => {
+            el.disabled = true;
+            el.classList.add("opacity-60");
+        });
+        btnDeleteSite.forEach(el => {
+            el.disabled = true;
+            el.classList.add("opacity-60");
+        });
+        if (trNewErrorPage) trNewErrorPage.hidden = true;
+        if (trNewSite) trNewSite.hidden = true;
+        if (editBtn) editBtn.hidden = false;
+        if (saveBtn) saveBtn.hidden = true;
+        if (cancelBtn) cancelBtn.hidden = true;
+    }
+
+    setViewMode();
+    window.addEventListener("pageshow", () => {
+        setViewMode();
     });
 
     if (editBtn) {
@@ -736,6 +829,24 @@
 
     }
 
+    if (saveBtn) {
+        saveBtn.addEventListener("click", () => {
+            editableFields.forEach(el => {
+                el.disabled = false;
+                el.classList.remove("opacity-60");
+            });
+        });
+    }
+
+    const form = document.getElementById("serverConfigForm");
+    if (form) {
+        form.addEventListener("submit", () => {
+            setTimeout(() => {
+                setViewMode();
+            }, 0);
+        });
+    }
+
     if (cancelBtn) {
         cancelBtn.addEventListener("click", () => {
             editableFields.forEach((el, i) => {
@@ -743,15 +854,7 @@
                 el.disabled = true;
                 el.classList.add("opacity-60");
             });
-            btnDeleteSite.forEach(el => {
-                el.disabled = true;
-                el.classList.add("opacity-60");
-            });
-            if (trNewErrorPage) trNewErrorPage.hidden = true;
-            if (trNewSite) trNewSite.hidden = true;
-            editBtn.hidden = false;
-            saveBtn.hidden = true;
-            cancelBtn.hidden = true;
+            setViewMode();
         });
     }
 

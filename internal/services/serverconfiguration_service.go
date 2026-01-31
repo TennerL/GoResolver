@@ -144,6 +144,223 @@ func (s *ServerConfigurationService) GetServerBasics(serverID string) (models.Se
 	return srv, nil
 }
 
+func (s *ServerConfigurationService) EnsureDDoSTables() error {
+	_, err := db.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS ddos_policies (
+			server_id INT PRIMARY KEY,
+			enabled TINYINT(1) NOT NULL DEFAULT 0,
+			mode VARCHAR(16) NOT NULL DEFAULT 'off',
+			preset VARCHAR(16) NOT NULL DEFAULT 'medium',
+			rate_limit INT NOT NULL DEFAULT 0,
+			burst INT NOT NULL DEFAULT 0,
+			conn_limit INT NOT NULL DEFAULT 0,
+			syn_rate INT NOT NULL DEFAULT 0,
+			syn_burst INT NOT NULL DEFAULT 0,
+			challenge_delay INT NOT NULL DEFAULT 5,
+			cookie_ttl INT NOT NULL DEFAULT 3600,
+			whitelist TEXT,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	_, _ = db.DB.Exec(`
+		CREATE TABLE IF NOT EXISTS ddos_overrides (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			server_id INT NOT NULL,
+			path_pattern VARCHAR(255) NOT NULL,
+			mode VARCHAR(16) NOT NULL DEFAULT 'off',
+			rate_limit INT NOT NULL DEFAULT 0,
+			burst INT NOT NULL DEFAULT 0,
+			conn_limit INT NOT NULL DEFAULT 0,
+			syn_rate INT NOT NULL DEFAULT 0,
+			syn_burst INT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			INDEX (server_id)
+		)
+	`)
+	return nil
+}
+
+func (s *ServerConfigurationService) GetDDoSPolicy(serverID string) (models.DDoSPolicy, error) {
+	if err := s.EnsureDDoSTables(); err != nil {
+		return models.DDoSPolicy{}, err
+	}
+
+	var p models.DDoSPolicy
+	var enabled int
+	err := db.DB.QueryRow(`
+		SELECT server_id, enabled, mode, preset, rate_limit, burst, conn_limit, syn_rate, syn_burst, challenge_delay, cookie_ttl, IFNULL(whitelist, '')
+		FROM ddos_policies
+		WHERE server_id = ?
+	`, serverID).Scan(
+		&p.ServerID,
+		&enabled,
+		&p.Mode,
+		&p.Preset,
+		&p.RateLimit,
+		&p.Burst,
+		&p.ConnLimit,
+		&p.SynRate,
+		&p.SynBurst,
+		&p.ChallengeDelay,
+		&p.CookieTTL,
+		&p.Whitelist,
+	)
+	if err == sql.ErrNoRows {
+		return models.DDoSPolicy{
+			ServerID:       serverID,
+			Enabled:        false,
+			Mode:           "off",
+			Preset:         "medium",
+			ChallengeDelay: 5,
+			CookieTTL:      3600,
+		}, nil
+	}
+	if err != nil {
+		return models.DDoSPolicy{}, err
+	}
+	p.Enabled = enabled == 1
+	return p, nil
+}
+
+func (s *ServerConfigurationService) SaveDDoSPolicy(p models.DDoSPolicy) error {
+	if err := s.EnsureDDoSTables(); err != nil {
+		return err
+	}
+	enabled := 0
+	if p.Enabled {
+		enabled = 1
+	}
+
+	_, err := db.DB.Exec(`
+		INSERT INTO ddos_policies (
+			server_id, enabled, mode, preset, rate_limit, burst, conn_limit, syn_rate, syn_burst, challenge_delay, cookie_ttl, whitelist
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			enabled = VALUES(enabled),
+			mode = VALUES(mode),
+			preset = VALUES(preset),
+			rate_limit = VALUES(rate_limit),
+			burst = VALUES(burst),
+			conn_limit = VALUES(conn_limit),
+			syn_rate = VALUES(syn_rate),
+			syn_burst = VALUES(syn_burst),
+			challenge_delay = VALUES(challenge_delay),
+			cookie_ttl = VALUES(cookie_ttl),
+			whitelist = VALUES(whitelist)
+	`,
+		p.ServerID, enabled, p.Mode, p.Preset, p.RateLimit, p.Burst, p.ConnLimit, p.SynRate, p.SynBurst, p.ChallengeDelay, p.CookieTTL, p.Whitelist,
+	)
+	return err
+}
+
+func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models.DDoSPolicy) error {
+	if serverID == "" {
+		return nil
+	}
+	var ip string
+	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
+		return err
+	}
+	if ip == "" {
+		return nil
+	}
+
+	comments := []string{
+		fmt.Sprintf("GoResolver:DDoS:%s:RL80", serverID),
+		fmt.Sprintf("GoResolver:DDoS:%s:RL443", serverID),
+		fmt.Sprintf("GoResolver:DDoS:%s:CL80", serverID),
+		fmt.Sprintf("GoResolver:DDoS:%s:CL443", serverID),
+		fmt.Sprintf("GoResolver:DDoS:%s:SYN80", serverID),
+		fmt.Sprintf("GoResolver:DDoS:%s:SYN443", serverID),
+	}
+	for _, comment := range comments {
+		_ = s.DeleteRuleByComment("INPUT", "filter", comment)
+	}
+
+	if !p.Enabled {
+		return nil
+	}
+
+	ports := []int{80, 443}
+	for _, port := range ports {
+		if p.ConnLimit > 0 {
+			cl := p.ConnLimit
+			if err := s.AddRule(models.IPTablesRuleSpec{
+				Table:    "filter",
+				Chain:    "INPUT",
+				Action:   "append",
+				Protocol: "tcp",
+				DestIP:   ip,
+				DestPort: port,
+				ConnLimit: &cl,
+				Target:   "DROP",
+				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:CL%d", serverID, port),
+			}); err != nil {
+				return err
+			}
+		}
+
+		if p.RateLimit > 0 {
+			args := []string{
+				"-m", "hashlimit",
+				"--hashlimit-above", fmt.Sprintf("%d/second", p.RateLimit),
+				"--hashlimit-burst", strconv.Itoa(max(1, p.Burst)),
+				"--hashlimit-mode", "srcip",
+				"--hashlimit-name", fmt.Sprintf("gr_%s_rl_%d", serverID, port),
+			}
+			if err := s.AddRule(models.IPTablesRuleSpec{
+				Table:    "filter",
+				Chain:    "INPUT",
+				Action:   "append",
+				Protocol: "tcp",
+				DestIP:   ip,
+				DestPort: port,
+				ExtraArgs: args,
+				Target:   "DROP",
+				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:RL%d", serverID, port),
+			}); err != nil {
+				return err
+			}
+		}
+
+		if p.SynRate > 0 {
+			args := []string{
+				"-m", "hashlimit",
+				"--hashlimit-above", fmt.Sprintf("%d/second", p.SynRate),
+				"--hashlimit-burst", strconv.Itoa(max(1, p.SynBurst)),
+				"--hashlimit-mode", "srcip",
+				"--hashlimit-name", fmt.Sprintf("gr_%s_syn_%d", serverID, port),
+			}
+			if err := s.AddRule(models.IPTablesRuleSpec{
+				Table:    "filter",
+				Chain:    "INPUT",
+				Action:   "append",
+				Protocol: "tcp",
+				SynOnly:  true,
+				DestIP:   ip,
+				DestPort: port,
+				ExtraArgs: args,
+				Target:   "DROP",
+				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:SYN%d", serverID, port),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerConfiguration) error {
 	result, err := db.DB.Exec(`
 		INSERT INTO server_configuration (
@@ -213,12 +430,14 @@ func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerC
 		return err
 	}
 
-	result2, err := db.DB.Exec(`
-		UPDATE servers SET name = ?, vpn_file = ? WHERE id = ?`,
-		sc.Name,
-		encryptedVPN,
-		sc.ServerID,
-	)
+	updateQuery := `UPDATE servers SET name = ?, vpn_file = ? WHERE id = ?`
+	updateArgs := []any{sc.Name, encryptedVPN, sc.ServerID}
+	if sc.IP != "" {
+		updateQuery = `UPDATE servers SET name = ?, ip = ?, vpn_file = ? WHERE id = ?`
+		updateArgs = []any{sc.Name, sc.IP, encryptedVPN, sc.ServerID}
+	}
+
+	result2, err := db.DB.Exec(updateQuery, updateArgs...)
 	if err != nil {
 		log.Println("UPDATE servers failed:", err)
 		return err
@@ -487,6 +706,10 @@ func (s *ServerConfigurationService) UpdateErrorFile(id string, content []byte) 
 func GenerateNginxConfig(SiteName string) (string, error) {
 	var config string
 
+	if err := NewServerConfigurationService().EnsureDDoSTables(); err != nil {
+		return "", err
+	}
+
 	err := db.DB.QueryRow(`
 		SELECT 
 		GROUP_CONCAT(site_config SEPARATOR '\n\n') AS nginx_config
@@ -496,6 +719,28 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			-- Websockets map if enabled
 			IF(sc.websockets = 1, 
 				'map $http_upgrade $connection_upgrade {\n default upgrade;\n ''''      close;\n}\n\n', 
+				''
+			),
+
+			-- DDoS zones and challenge map
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0
+				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
+				CONCAT('limit_req_zone $binary_remote_addr zone=gr_', sc.id, '_req:10m rate=', dp.rate_limit, 'r/s;\n'),
+				''
+			),
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.conn_limit, 0) > 0
+				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
+				CONCAT('limit_conn_zone $binary_remote_addr zone=gr_', sc.id, '_conn:10m;\n'),
+				''
+			),
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge'
+				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
+				CONCAT(
+					'map $cookie_gr_challenge_', sc.id, ' $gr_challenge_valid_', sc.id, ' {\n',
+					' default 0;\n',
+					' \"1\" 1;\n',
+					'}\n\n'
+				),
 				''
 			),
 
@@ -519,8 +764,33 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			-- Proxy error intercept
 			IF(sc.proxy_intercept_errors = 1, ' proxy_intercept_errors on;\n\n', ''),
 
+			-- DDoS challenge location
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge',
+				CONCAT(
+					' location = /__gr_challenge_', sc.id, ' {\n',
+					'  default_type text/html;\n',
+					'  add_header Cache-Control \"no-store\";\n',
+					'  add_header Set-Cookie \"gr_challenge_', sc.id, '=1; Path=/; Max-Age=', IFNULL(dp.cookie_ttl, 3600), '; SameSite=Lax\";\n',
+					'  return 200 \"<!doctype html><html><head><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\"><title>Checking your browser</title><style>body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#111827}main{max-width:720px;margin:8vh auto;padding:24px}header{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#f97316,#f43f5e);display:grid;place-items:center;color:#fff;font-weight:700}.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;box-shadow:0 6px 16px rgba(15,23,42,.08)}.muted{color:#6b7280;font-size:14px} .status{display:flex;align-items:center;gap:10px;margin:18px 0} .spinner{width:18px;height:18px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} .footer{margin-top:18px;font-size:12px;color:#9ca3af}</style></head><body><main><header><div class=\\\"logo\\\">GR</div><div><div style=\\\"font-weight:700\\\">GoResolver Security</div><div class=\\\"muted\\\">DDoS protection check</div></div></header><div class=\\\"card\\\"><div style=\\\"font-weight:700;font-size:18px\\\">Checking your browser before accessing the site</div><div class=\\\"muted\\\">This process is automatic. Your browser will redirect shortly.</div><div class=\\\"status\\\"><div class=\\\"spinner\\\"></div><div class=\\\"muted\\\">Analyzing request...</div></div><div class=\\\"muted\\\">Please allow up to a few seconds.</div></div><div class=\\\"footer\\\">Protected by GoResolver</div></main><script>document.cookie=\\\"gr_challenge_', sc.id, '=1; path=/; max-age=', IFNULL(dp.cookie_ttl, 3600), '\\\";var u=new URLSearchParams(window.location.search).get(\\\"u\\\")||\\\"/\\\";setTimeout(function(){window.location=u;},', IFNULL(dp.challenge_delay, 5), '000);</script></body></html>\";\n',
+					' }\n\n'
+				),
+				''
+			),
+
 			-- Main location
 			' location / {\n',
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge',
+				CONCAT('  if ($gr_challenge_valid_', sc.id, ' = 0) { return 302 /__gr_challenge_', sc.id, '?u=$request_uri; }\n'),
+				''
+			),
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0,
+				CONCAT('  limit_req zone=gr_', sc.id, '_req burst=', IFNULL(dp.burst, 0), ' nodelay;\n'),
+				''
+			),
+			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.conn_limit, 0) > 0,
+				CONCAT('  limit_conn gr_', sc.id, '_conn ', IFNULL(dp.conn_limit, 0), ';\n'),
+				''
+			),
 			' proxy_pass http://', IFNULL(s.ip, ''), ':', IFNULL(sc.proxy_pass_port, ''), ';\n',
 			IF(sc.proxy_intercept_errors = 1, CONCAT(
 				' proxy_connect_timeout ', sc.proxy_connect_timeout, 's;\n',
@@ -569,6 +839,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			) AS site_config
 		FROM server_configuration sc
 		LEFT JOIN servers s ON s.id = sc.fk_server
+		LEFT JOIN ddos_policies dp ON dp.server_id = s.id
 		LEFT JOIN certificates c ON c.site_id = sc.id
 		LEFT JOIN error_pages ep ON ep.server_id = sc.fk_server AND ep.site_id = sc.id OR ep.site_id = '*'
         LEFT JOIN error_page_files ef ON ef.id = ep.error_page_id
@@ -779,6 +1050,14 @@ func (s *ServerConfigurationService) SaveVPNConfig(serverID string, config []byt
 
     _, err := db.DB.Exec(query, config, serverID)
     return err
+}
+
+func (s *ServerConfigurationService) UpdateServerIP(serverID, ip string) error {
+	if strings.TrimSpace(ip) == "" {
+		return nil
+	}
+	_, err := db.DB.Exec(`UPDATE servers SET ip = ? WHERE id = ?`, ip, serverID)
+	return err
 }
 
 func (s *ServerConfigurationService) AssignStaticVPNIP(clientName, ip string) error {
