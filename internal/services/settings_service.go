@@ -34,6 +34,7 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "paths.error_pages", Label: "Error pages path", Group: "Paths", Help: "Filesystem path for custom error pages", Default: "/var/www/error_pages"},
 	{Key: "paths.nginx_sites_available", Label: "Nginx sites-available", Group: "Paths", Help: "Nginx sites-available directory", Default: "/etc/nginx/sites-available"},
 	{Key: "paths.nginx_sites_enabled", Label: "Nginx sites-enabled", Group: "Paths", Help: "Nginx sites-enabled directory", Default: "/etc/nginx/sites-enabled"},
+	{Key: "paths.nginx_conf_d", Label: "Nginx conf.d", Group: "Paths", Help: "Nginx conf.d directory", Default: "/etc/nginx/conf.d"},
 	{Key: "paths.ssl_dir", Label: "SSL directory", Group: "Paths", Help: "Directory for issued certificates", Default: "/etc/ssl"},
 	{Key: "openvpn.pki_dir", Label: "OpenVPN PKI dir", Group: "OpenVPN", Help: "PKI directory for OpenVPN CA", Default: "/root/openvpn-ca/pki"},
 	{Key: "openvpn.ca_dir", Label: "OpenVPN CA dir", Group: "OpenVPN", Help: "Base directory for OpenVPN CA", Default: "/root/openvpn-ca"},

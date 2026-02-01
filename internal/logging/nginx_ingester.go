@@ -25,9 +25,11 @@ type NginxLog struct {
 	RequestTime   float64 `json:"request_time"`
 	UpstreamTime  string  `json:"upstream_time"`
 	Host          string  `json:"host"`
+	RayID         string  `json:"ray_id"`
 }
 
 func StartNginxLogIngester(db *sql.DB, path string) {
+	ensureNginxLogsSchema(db)
 	file, err := os.Open(path)
 	if err != nil {
 		log.Fatalf("cannot open nginx log file: %v", err)
@@ -73,8 +75,11 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 			jsonPart := line[start:]
 			var arr []json.RawMessage
 			if err := json.Unmarshal(jsonPart, &arr); err != nil {
-				log.Printf("json array error: %v | %s\n", err, jsonPart)
-				continue
+				repaired := repairLegacyLogFormat(jsonPart)
+				if repaired == nil || json.Unmarshal(repaired, &arr) != nil {
+					log.Printf("json array error: %v | %s\n", err, jsonPart)
+					continue
+				}
 			}
 
 			if len(arr) != 2 {
@@ -101,6 +106,33 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 	}
 }
 
+func repairLegacyLogFormat(raw []byte) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) < 3 || trimmed[0] != '[' {
+		return nil
+	}
+	comma := bytes.IndexByte(trimmed, ',')
+	if comma == -1 {
+		return nil
+	}
+	first := bytes.TrimSpace(trimmed[1:comma])
+	if len(first) == 0 || first[0] == '"' {
+		return nil
+	}
+	rest := bytes.TrimSpace(trimmed[comma+1:])
+	buf := bytes.NewBuffer(nil)
+	buf.WriteByte('[')
+	buf.WriteByte('"')
+	buf.Write(first)
+	buf.WriteString(`", `)
+	buf.Write(rest)
+	return buf.Bytes()
+}
+
+func ensureNginxLogsSchema(db *sql.DB) {
+	_, _ = db.Exec(`ALTER TABLE nginx_logs ADD COLUMN ray_id VARCHAR(64) NULL`)
+}
+
 func insertBatch(db *sql.DB, batch []NginxLog) {
 	if len(batch) == 0 {
 		return
@@ -115,8 +147,8 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 	stmt, err := tx.Prepare(
     "INSERT INTO nginx_logs " +
     "(`time`, remote_addr, x_forwarded_for, method, uri, status, bytes, " +
-    "referer, user_agent, request_time, upstream_time, host) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    "referer, user_agent, request_time, upstream_time, host, ray_id) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		log.Println("prepare error:", err)
 		tx.Rollback()
@@ -153,6 +185,7 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 			e.RequestTime,
 			upstream,
 			e.Host,
+			e.RayID,
 		)
 		if err != nil {
 			log.Printf("insert error: %v | entry: %+v\n", err, e)

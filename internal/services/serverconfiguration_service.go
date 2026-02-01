@@ -754,6 +754,8 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 				' listen [::]:', sc.server_port, ' ssl http2;\n'
 			), ''),
 			' server_name ', IFNULL(sc.server_name, ''), ';\n\n',
+			' set $gr_ray_id \"GR-$request_id\";\n',
+			' add_header X-Ray-ID $gr_ray_id always;\n',
 
 			-- SSL certificate if enabled
 			IF(sc.ssl_enabled = 1, CONCAT(
@@ -822,6 +824,10 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 					' location /', ef.Filename, ' {\n',
 					' root ', ef.Path, ';\n',
 					' default_type text/',ef.response_type,';\n',
+					' sub_filter_types text/html;\n',
+					' sub_filter_once off;\n',
+					' sub_filter \"__GR_RAY_ID__\" $gr_ray_id;\n',
+					' gzip off;\n',
 					' try_files /', ef.Filename, ' =404;\n',
 					' }\n'
 				) SEPARATOR '\n'
@@ -883,6 +889,9 @@ func DeployNginxConfig(serverName string) error {
 	if err := ensureDefaultDenySite(); err != nil {
 		return fmt.Errorf("default deny config failed: %w", err)
 	}
+	if err := ensureNginxLogFormat(); err != nil {
+		return fmt.Errorf("nginx log config failed: %w", err)
+	}
 
 	testCmd := exec.Command("nginx", "-t")
 	testOut, err := testCmd.CombinedOutput()
@@ -896,6 +905,29 @@ func DeployNginxConfig(serverName string) error {
 	}
 
 	return nil
+}
+
+func ensureNginxLogFormat() error {
+	settings := NewSettingsService()
+	confDir := settings.GetValue("paths.nginx_conf_d")
+	if confDir == "" {
+		confDir = "/etc/nginx/conf.d"
+	}
+	logPath := settings.GetValue("logging.nginx_access_json")
+	if logPath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(confDir, "gresolver_log_format.conf")
+	config := `log_format gr_json escape=json
+'["$time_iso8601", {"time":"$time_iso8601","remote_addr":"$remote_addr","x_forwarded_for":"$http_x_forwarded_for","method":"$request_method","uri":"$request_uri","status":$status,"bytes":$body_bytes_sent,"referer":"$http_referer","user_agent":"$http_user_agent","request_time":$request_time,"upstream_time":"$upstream_response_time","host":"$host","ray_id":"$gr_ray_id"}]';
+
+access_log ` + logPath + ` gr_json;` + "\n"
+
+	return os.WriteFile(configPath, []byte(config), 0644)
 }
 
 func ensureDefaultDenySite() error {
@@ -912,6 +944,8 @@ func ensureDefaultDenySite() error {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    set $gr_ray_id "GR-$request_id";
+    add_header X-Ray-ID $gr_ray_id always;
     default_type text/html;
     return 403 "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Access blocked</title><style>body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}a{color:#38bdf8;text-decoration:none} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:24px} .badge{display:inline-block;background:#ef4444;color:#fff;padding:4px 8px;border-radius:999px;font-size:12px}</style></head><body><main><div class=\"card\"><div class=\"badge\">Access denied</div><h1>Access via IP not allowed</h1><p>This host only serves configured domains. Please use a valid hostname.</p></div></main></body></html>";
 }
@@ -919,6 +953,8 @@ server {
     listen 443 ssl http2 default_server;
     listen [::]:443 ssl http2 default_server;
     server_name _;
+    set $gr_ray_id "GR-$request_id";
+    add_header X-Ray-ID $gr_ray_id always;
     ssl_certificate ` + certPath + `;
     ssl_certificate_key ` + keyPath + `;
     default_type text/html;
