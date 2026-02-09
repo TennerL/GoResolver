@@ -16,6 +16,7 @@
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab5">Custom Errors</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab6">Networking & IP-Restrictions</button>
         <button type="button" class="{{ $tabBtnClass }}" data-tab="tab7">DDoS Protection</button>
+        <button type="button" class="{{ $tabBtnClass }}" data-tab="tab8">Fail2Ban</button>
     </nav>
 </div>
 
@@ -483,6 +484,94 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Tab 8: Fail2Ban -->
+            <div id="tab8" class="tab-content hidden">
+                <p class="text-sm text-gray-500 mb-6">Automatically ban IPs that trigger repeated failures</p>
+
+                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-md p-6 space-y-6">
+                    <div class="flex items-center gap-4">
+                        <label class="font-medium">Enable Fail2Ban</label>
+                        <input type="checkbox" name="fail2ban_enabled" value="1" {{ if .Fail2BanPolicy.Enabled }}checked{{ end }}>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Max retry</label>
+                            <input name="fail2ban_max_retry" type="number" value="{{ .Fail2BanPolicy.MaxRetry }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Find time (seconds)</label>
+                            <input name="fail2ban_find_time" type="number" value="{{ .Fail2BanPolicy.FindTimeSeconds }}" class="{{ $inputClass }}">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Ban time (seconds)</label>
+                            <input name="fail2ban_ban_time" type="number" value="{{ .Fail2BanPolicy.BanTimeSeconds }}" class="{{ $inputClass }}">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Status codes (comma-separated)</label>
+                            <input name="fail2ban_status_codes" value="{{ .Fail2BanPolicy.StatusCodes }}" class="{{ $inputClass }}" placeholder="403,401">
+                        </div>
+                        <div class="flex flex-col">
+                            <label class="mb-1 font-medium">Ignore IPs / CIDR (comma-separated)</label>
+                            <input name="fail2ban_ignore_ips" value="{{ .Fail2BanPolicy.IgnoreIPs }}" class="{{ $inputClass }}" placeholder="127.0.0.1, 10.0.0.0/8">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-4">
+                        <label class="font-medium">Use X-Forwarded-For</label>
+                        <input type="checkbox" name="fail2ban_use_xff" value="1" {{ if .Fail2BanPolicy.UseXForwardedFor }}checked{{ end }}>
+                    </div>
+
+                    <div class="text-sm text-gray-500">
+                        Fail2Ban settings are saved with the main Save button on the right.
+                    </div>
+                </div>
+
+                <div class="mt-6 bg-white dark:bg-slate-900 rounded-2xl shadow-md overflow-hidden">
+                    <div class="px-6 py-4 border-b text-sm font-medium text-gray-700 dark:text-gray-200">Active bans</div>
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 dark:bg-slate-800 border-b">
+                            <tr class="text-left text-gray-500 dark:text-gray-400">
+                                <th class="px-4 py-3">IP</th>
+                                <th class="px-4 py-3">Hits</th>
+                                <th class="px-4 py-3">Banned At</th>
+                                <th class="px-4 py-3">Expires At</th>
+                                <th class="px-4 py-3 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y">
+                            {{ range .Fail2BanBans }}
+                            <tr class="hover:bg-gray-50 dark:hover:bg-slate-800 transition">
+                                <td class="px-4 py-3 font-mono text-xs">{{ .IP }}</td>
+                                <td class="px-4 py-3">{{ .HitCount }}</td>
+                                <td class="px-4 py-3">{{ .BannedAt }}</td>
+                                <td class="px-4 py-3">{{ .ExpiresAt }}</td>
+                                <td class="px-4 py-3 text-center">
+                                    <button type="submit"
+                                            name="action_type"
+                                            value="unban_fail2ban"
+                                            data-fail2ban-ip="{{ .IP }}"
+                                            onclick="return confirm('Unban this IP?')"
+                                            class="btndelete text-red-600 hover:underline text-sm opacity-60"
+                                            disabled>
+                                        Unban
+                                    </button>
+                                </td>
+                            </tr>
+                            {{ end }}
+                            {{ if not .Fail2BanBans }}
+                            <tr>
+                                <td class="px-4 py-4 text-gray-400" colspan="5">No active bans</td>
+                            </tr>
+                            {{ end }}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <!-- Sidebar with shared button class -->
@@ -773,6 +862,11 @@
             btn.classList.add("border-red-600", "text-red-600");
             content.classList.remove("hidden");
         }
+        if (history && history.replaceState) {
+            const url = new URL(window.location.href);
+            url.searchParams.set("tab", tabId);
+            history.replaceState(null, "", url.toString());
+        }
     }
 
     activateTab(initialTab);
@@ -880,6 +974,8 @@
             setHidden("table", btn.dataset.table);
             setHidden("chain", btn.dataset.chain);
             setHidden("comment", btn.dataset.comment);
+
+            setHidden("fail2ban_ip", btn.dataset.fail2banIp);
         });
     });
 //});

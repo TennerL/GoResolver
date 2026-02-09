@@ -54,6 +54,8 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "abuseipdb.risk_threshold", Label: "AbuseIPDB risk threshold", Group: "Security", Help: "Minimum score to classify as suspicious", Default: "50"},
 	{Key: "abuseipdb.max_age_days", Label: "AbuseIPDB max age days", Group: "Security", Help: "Max age of reports when querying AbuseIPDB", Default: "90"},
 	{Key: "abuseipdb.cache_ttl_hours", Label: "AbuseIPDB cache TTL (hours)", Group: "Security", Help: "How long to cache reputation lookups", Default: "24"},
+	{Key: "security.fail2ban_interval_seconds", Label: "Fail2Ban interval (seconds)", Group: "Security", Help: "How often Fail2Ban scans logs", Default: "30"},
+	{Key: "nginx.transparent_proxy", Label: "Nginx transparent proxy", Group: "Nginx", Help: "Enable proxy_bind transparent to preserve client IP (requires OS routing setup)", Default: "0"},
 }
 
 func (s *SettingsService) EnsureTable() error {

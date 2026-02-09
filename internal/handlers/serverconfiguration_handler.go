@@ -98,6 +98,8 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 		h.DeleteRule(w, r)
 	case "create-vpn-file":
 		h.CreateVPNConfig(w, r)
+	case "unban_fail2ban":
+		h.UnbanFail2Ban(w, r)
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
@@ -114,6 +116,8 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 
 	conf := h.Service.GetServerConfiguration(serverID)
 	policy, _ := h.Service.GetDDoSPolicy(serverID)
+	fail2banPolicy, _ := h.Service.GetFail2BanPolicy(serverID)
+	fail2banBans := h.Service.ListFail2BanBans(serverID)
 	if len(conf) == 0 {
 		srv, err := h.Service.GetServerBasics(serverID)
 		if err != nil {
@@ -131,6 +135,8 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 			ErrorPages: h.Service.GetServerErrorPages(serverID),
 			ErrorFiles: h.Service.GetServerErrorFiles(),
 			DDoSPolicy: policy,
+			Fail2BanPolicy: fail2banPolicy,
+			Fail2BanBans:   fail2banBans,
 		}
 
 		if srv.IP != "" {
@@ -138,7 +144,7 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				log.Println("iptables error:", err)
 			} else {
-				page.IPTablesRules = FilterRulesForServer(rules, srv.IP)
+				page.IPTablesRules = FilterRulesForServer(rules, serverID, srv.IP)
 			}
 		}
 
@@ -165,9 +171,11 @@ func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Reques
 		ErrorPages: errorPages,
 		ErrorFiles: errorFiles,
 		DDoSPolicy: policy,
+		Fail2BanPolicy: fail2banPolicy,
+		Fail2BanBans:   fail2banBans,
 	}
 	rules, err := h.Service.ListIPTablesRules()
-	rulesForServer := FilterRulesForServer(rules, conf[0].IP)
+	rulesForServer := FilterRulesForServer(rules, serverID, conf[0].IP)
 	if err != nil {
 		log.Println("iptables error:", err)
 	} else {
@@ -343,6 +351,11 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 
 	if err := h.applyDDoSFromForm(r, serverID); err != nil {
 		http.Error(w, "Failed to apply DDoS policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.applyFail2BanFromForm(r, serverID); err != nil {
+		http.Error(w, "Failed to apply Fail2Ban policy: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -531,7 +544,7 @@ func (h *ServerConfigurationHandler) DeleteErrorPage(w http.ResponseWriter, r *h
 	redirectWithTab(w, r, serverID, "tab5")
 }
 
-func FilterRulesForServer(rules []models.IPTablesRule, serverIPs ...string) []models.IPTablesRule {
+func FilterRulesForServer(rules []models.IPTablesRule, serverID string, serverIPs ...string) []models.IPTablesRule {
     var filtered []models.IPTablesRule
 
     ipSet := make(map[string]bool)
@@ -540,13 +553,49 @@ func FilterRulesForServer(rules []models.IPTablesRule, serverIPs ...string) []mo
     }
 
     for _, r := range rules {
-        if ipSet[r.Source] || ipSet[r.Destination] {
+        if ipSet[r.Source] || ipSet[r.Destination] || isServerRule(r.Extra, serverID) || isGeneralGoResolverRule(r.Extra) {
             filtered = append(filtered, r)
         }
     }
 
     return filtered
 }
+
+func isServerRule(comment, serverID string) bool {
+	if comment == "" || serverID == "" {
+		return false
+	}
+	prefixes := []string{
+		"GoResolver:Fail2Ban:" + serverID + ":",
+		"GoResolver:DDoS:" + serverID + ":",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(comment, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGeneralGoResolverRule(comment string) bool {
+	if comment == "" {
+		return false
+	}
+	if !strings.HasPrefix(comment, "GoResolver:") {
+		return false
+	}
+	if strings.Contains(comment, ":DDoS:") {
+		return false
+	}
+	if strings.Contains(comment, ":Fail2Ban:") {
+		return false
+	}
+	if strings.Contains(comment, ":MASQUERADE") {
+		return false
+	}
+	return true
+}
+
 
 func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -896,6 +945,53 @@ func (h *ServerConfigurationHandler) applyDDoSFromForm(r *http.Request, serverID
 	}
 
 	return nil
+}
+
+func (h *ServerConfigurationHandler) applyFail2BanFromForm(r *http.Request, serverID string) error {
+	enabled := r.FormValue("fail2ban_enabled") == "1"
+	maxRetry, _ := strconv.Atoi(r.FormValue("fail2ban_max_retry"))
+	findTime, _ := strconv.Atoi(r.FormValue("fail2ban_find_time"))
+	banTime, _ := strconv.Atoi(r.FormValue("fail2ban_ban_time"))
+	statusCodes := strings.TrimSpace(r.FormValue("fail2ban_status_codes"))
+	ignoreIPs := strings.TrimSpace(r.FormValue("fail2ban_ignore_ips"))
+	useXff := r.FormValue("fail2ban_use_xff") == "1"
+
+	policy := models.Fail2BanPolicy{
+		ServerID:         serverID,
+		Enabled:          enabled,
+		MaxRetry:         maxRetry,
+		FindTimeSeconds:  findTime,
+		BanTimeSeconds:   banTime,
+		StatusCodes:      statusCodes,
+		IgnoreIPs:        ignoreIPs,
+		UseXForwardedFor: useXff,
+	}
+
+	if err := h.Service.SaveFail2BanPolicy(policy); err != nil {
+		return err
+	}
+	if enabled {
+		h.Service.EnforceFail2BanOnce()
+	}
+	return nil
+}
+
+func (h *ServerConfigurationHandler) UnbanFail2Ban(w http.ResponseWriter, r *http.Request) {
+	serverID := mux.Vars(r)["id"]
+	if serverID == "" {
+		http.Error(w, "No server id supplied", http.StatusBadRequest)
+		return
+	}
+	ip := strings.TrimSpace(r.FormValue("fail2ban_ip"))
+	if ip == "" {
+		http.Error(w, "Missing IP", http.StatusBadRequest)
+		return
+	}
+	if err := h.Service.UnbanFail2BanIP(serverID, ip); err != nil {
+		http.Error(w, "Failed to unban IP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	redirectWithTab(w, r, serverID, "tab8")
 }
 
 

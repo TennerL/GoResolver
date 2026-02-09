@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sort"
 	"math/big"
+	"net"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -266,27 +267,56 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
 		return err
 	}
-	if ip == "" {
-		return nil
-	}
+	localIP := isLocalIP(ip)
 
-	comments := []string{
-		fmt.Sprintf("GoResolver:DDoS:%s:RL80", serverID),
-		fmt.Sprintf("GoResolver:DDoS:%s:RL443", serverID),
-		fmt.Sprintf("GoResolver:DDoS:%s:CL80", serverID),
-		fmt.Sprintf("GoResolver:DDoS:%s:CL443", serverID),
-		fmt.Sprintf("GoResolver:DDoS:%s:SYN80", serverID),
-		fmt.Sprintf("GoResolver:DDoS:%s:SYN443", serverID),
-	}
-	for _, comment := range comments {
-		_ = s.DeleteRuleByComment("INPUT", "filter", comment)
-	}
+	ddosPrefix := fmt.Sprintf("GoResolver:DDoS:%s:", serverID)
+	_ = s.DeleteRuleByComment("INPUT", "filter", ddosPrefix)
 
 	if !p.Enabled {
 		return nil
 	}
 
-	ports := []int{80, 443}
+	ports := s.getServerPorts(serverID)
+	if len(ports) == 0 {
+		ports = []int{80, 443}
+	}
+	destIP := ""
+	if localIP && strings.TrimSpace(ip) != "" {
+		destIP = ip
+	}
+
+	whitelist := normalizeWhitelistEntries(p.Whitelist)
+	if len(whitelist) > 0 {
+		insertAt, err := s.findLastRulePositionByComment("INPUT", "filter", "GoResolver:Fail2Ban:")
+		if err != nil {
+			return err
+		}
+		if insertAt <= 0 {
+			insertAt = 1
+		} else {
+			insertAt++
+		}
+		for _, port := range ports {
+			for _, entry := range whitelist {
+				if err := s.AddRule(models.IPTablesRuleSpec{
+					Table:     "filter",
+					Chain:     "INPUT",
+					Action:    "insert",
+					Position:  insertAt,
+					Protocol:  "tcp",
+					SourceIP:  entry,
+					DestIP:    destIP,
+					DestPort:  port,
+					Target:    "ACCEPT",
+					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
+				}); err != nil {
+					return err
+				}
+				insertAt++
+			}
+		}
+	}
+
 	for _, port := range ports {
 		if p.ConnLimit > 0 {
 			cl := p.ConnLimit
@@ -295,7 +325,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				DestIP:   ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ConnLimit: &cl,
 				Target:   "DROP",
@@ -318,7 +348,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				DestIP:   ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -342,7 +372,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Action:   "append",
 				Protocol: "tcp",
 				SynOnly:  true,
-				DestIP:   ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -354,6 +384,71 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	}
 
 	return nil
+}
+
+func (s *ServerConfigurationService) getServerPorts(serverID string) []int {
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT server_port
+		FROM server_configuration
+		WHERE fk_server = ? AND server_port > 0
+	`, serverID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	ports := []int{}
+	seen := map[int]struct{}{}
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+	return ports
+}
+
+func isLocalIP(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return false
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ipNet *net.IPNet
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ipNet = v
+			case *net.IPAddr:
+				ipNet = &net.IPNet{IP: v.IP, Mask: v.IP.DefaultMask()}
+			}
+			if ipNet == nil {
+				continue
+			}
+			if ipNet.IP.Equal(parsed) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func max(a, b int) int {
@@ -548,6 +643,66 @@ func (s *ServerConfigurationService) SaveErrorPage(ep models.ServerErrorPages) e
 	}
 	return nil
 }
+
+func normalizeWhitelistEntries(input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	parts := strings.Split(input, ",")
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "/") {
+			if _, netw, err := net.ParseCIDR(p); err == nil && netw != nil {
+				key := netw.String()
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					out = append(out, key)
+				}
+			}
+			continue
+		}
+		if ip := net.ParseIP(p); ip != nil {
+			key := ip.String()
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				out = append(out, key)
+			}
+		}
+	}
+	return out
+}
+
+func (s *ServerConfigurationService) findLastRulePositionByComment(chain, table, comment string) (int, error) {
+	args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
+	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("iptables list failed: %s", string(out))
+	}
+
+	lines := strings.Split(string(out), "\n")
+	maxNum := 0
+	for _, line := range lines {
+		if !strings.Contains(line, comment) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		num, _ := strconv.Atoi(fields[0])
+		if num > maxNum {
+			maxNum = num
+		}
+	}
+	return maxNum, nil
+}
 func (s *ServerConfigurationService) InsertErrorPage(ep models.ServerErrorPages) error {
 	_, err := db.DB.Exec(`
 		INSERT INTO error_pages (
@@ -725,14 +880,39 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			),
 
 			-- DDoS zones and challenge map
+			IF(IFNULL(dp.enabled, 0) = 1
+				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
+				CONCAT(
+					'geo $gr_ddos_whitelist_', sc.id, ' {\n',
+					'  default 0;\n',
+					IF(IFNULL(dp.whitelist, '') <> '',
+						CONCAT('  ', REPLACE(REPLACE(REPLACE(REPLACE(dp.whitelist, '\r', ''), '\n', ''), ' ', ''), ',', ';\n  '), ';\n'),
+						''
+					),
+					'}\n\n'
+				),
+				''
+			),
 			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0
 				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT('limit_req_zone $binary_remote_addr zone=gr_', sc.id, '_req:10m rate=', dp.rate_limit, 'r/s;\n'),
+				CONCAT(
+					'map $gr_ddos_whitelist_', sc.id, ' $gr_ddos_req_key_', sc.id, ' {\n',
+					'  default $binary_remote_addr$host;\n',
+					'  1 \"\";\n',
+					'}\n\n',
+					'limit_req_zone $gr_ddos_req_key_', sc.id, ' zone=gr_', sc.id, '_req:10m rate=', dp.rate_limit, 'r/s;\n'
+				),
 				''
 			),
 			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.conn_limit, 0) > 0
 				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT('limit_conn_zone $binary_remote_addr zone=gr_', sc.id, '_conn:10m;\n'),
+				CONCAT(
+					'map $gr_ddos_whitelist_', sc.id, ' $gr_ddos_conn_key_', sc.id, ' {\n',
+					'  default $binary_remote_addr$host;\n',
+					'  1 \"\";\n',
+					'}\n\n',
+					'limit_conn_zone $gr_ddos_conn_key_', sc.id, ' zone=gr_', sc.id, '_conn:10m;\n'
+				),
 				''
 			),
 			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge'
@@ -741,6 +921,12 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 					'map $cookie_gr_challenge_', sc.id, ' $gr_challenge_valid_', sc.id, ' {\n',
 					' default 0;\n',
 					' \"1\" 1;\n',
+					'}\n\n',
+					'map \"$gr_ddos_whitelist_', sc.id, ':$gr_challenge_valid_', sc.id, '\" $gr_ddos_allow_', sc.id, ' {\n',
+					' default 0;\n',
+					' \"1:0\" 1;\n',
+					' \"1:1\" 1;\n',
+					' \"0:1\" 1;\n',
 					'}\n\n'
 				),
 				''
@@ -784,7 +970,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			-- Main location
 			' location / {\n',
 			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge',
-				CONCAT('  if ($gr_challenge_valid_', sc.id, ' = 0) { return 302 /__gr_challenge_', sc.id, '?u=$request_uri; }\n'),
+				CONCAT('  if ($gr_ddos_allow_', sc.id, ' = 0) { return 302 /__gr_challenge_', sc.id, '?u=$request_uri; }\n'),
 				''
 			),
 			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0,
@@ -806,8 +992,9 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 				''
 			),
 			' proxy_set_header Host $host;\n',
-			' proxy_set_header X-Forwarded-For $remote_addr;\n',
-			' proxy_set_header X-Forwarded-Proto https;\n',
+			' proxy_set_header X-Real-IP $remote_addr;\n',
+			' proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n',
+			' proxy_set_header X-Forwarded-Proto $scheme;\n',
 
 			-- Error pages directives
 			IF(sc.proxy_intercept_errors = 1, CONCAT(
@@ -860,7 +1047,28 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 		return "", err
 	}
 
+	if shouldEnableTransparentProxy() {
+		marker := " proxy_set_header X-Forwarded-Proto $scheme;\n"
+		inject := marker + " proxy_bind $remote_addr transparent;\n"
+		if strings.Contains(config, marker) && !strings.Contains(config, "proxy_bind $remote_addr transparent;") {
+			config = strings.Replace(config, marker, inject, 1)
+		}
+	}
+
 	return config, nil
+}
+
+func shouldEnableTransparentProxy() bool {
+	val := strings.TrimSpace(NewSettingsService().GetValue("nginx.transparent_proxy"))
+	if val == "" {
+		return false
+	}
+	switch strings.ToLower(val) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // func (s *ServerConfigurationService) DeployNginxConfig(serverName string) error {
@@ -1879,14 +2087,27 @@ func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment s
     }
 
     lines := strings.Split(string(out), "\n")
+    var nums []int
     for _, line := range lines {
         if strings.Contains(line, comment) {
             fields := strings.Fields(line)
             if len(fields) > 0 {
                 num, _ := strconv.Atoi(fields[0])
-                return s.DeleteRule(chain, num, table)
+                if num > 0 {
+                    nums = append(nums, num)
+                }
             }
         }
     }
-    return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
+    if len(nums) == 0 {
+        return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
+    }
+    sort.Sort(sort.Reverse(sort.IntSlice(nums)))
+    var lastErr error
+    for _, num := range nums {
+        if err := s.DeleteRule(chain, num, table); err != nil {
+            lastErr = err
+        }
+    }
+    return lastErr
 }

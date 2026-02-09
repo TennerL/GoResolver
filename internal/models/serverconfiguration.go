@@ -59,3 +59,22 @@ type DDoSPolicy struct {
 	CookieTTL      int
 	Whitelist      string
 }
+
+type Fail2BanPolicy struct {
+	ServerID         string
+	Enabled          bool
+	MaxRetry         int
+	FindTimeSeconds  int
+	BanTimeSeconds   int
+	StatusCodes      string
+	IgnoreIPs        string
+	UseXForwardedFor bool
+}
+
+type Fail2BanBan struct {
+	ServerID  string
+	IP        string
+	HitCount  int
+	BannedAt  string
+	ExpiresAt string
+}

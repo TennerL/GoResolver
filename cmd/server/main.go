@@ -22,11 +22,12 @@ type RecordWithTTL struct {
 func main() {
 	db.Init()
 
-	//go startDNSServer()
+	go startDNSServer()
 	go logging.StartNginxLogIngester(
 		db.DB,
 		appSettings.GetValue("logging.nginx_access_json"),
 	)
+	go services.NewServerConfigurationService().StartFail2BanEnforcer()
 
 	application := app.New()
 	application.Run()

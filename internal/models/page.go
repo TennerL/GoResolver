@@ -89,6 +89,8 @@ type PageDataServerConfig struct {
 
 	IPTablesRules []IPTablesRule 
 	DDoSPolicy   DDoSPolicy
+	Fail2BanPolicy Fail2BanPolicy
+	Fail2BanBans   []Fail2BanBan
 }
 
 // type PageDataServerConfig struct {
