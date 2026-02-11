@@ -5,12 +5,19 @@ import (
 	"GoResolver/internal/db"
 	"GoResolver/internal/logging"
 	"GoResolver/internal/services"
-	"encoding/binary"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"github.com/miekg/dns"
 	"log"
 	"net"
+	"sync"
 	"strings"
+	"time"
 )
 
 type RecordWithTTL struct {
@@ -18,11 +25,25 @@ type RecordWithTTL struct {
 	TTL     uint32
 }
 
+type dnssecKeyMaterial struct {
+	Key    *dns.DNSKEY
+	Signer ed25519.PrivateKey
+}
+
+var dnssecCache struct {
+	mu       sync.Mutex
+	material *dnssecKeyMaterial
+}
+
 
 func main() {
 	db.Init()
 
-	go startDNSServer()
+	if settingEnabled(appSettings.GetValue("dns.enabled"), true) {
+		go startDNSServer()
+	} else {
+		log.Println("Built-in DNS server is disabled (dns.enabled=0)")
+	}
 	go logging.StartNginxLogIngester(
 		db.DB,
 		appSettings.GetValue("logging.nginx_access_json"),
@@ -60,32 +81,31 @@ func startDNSServer() {
 }
 
 func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
-	if len(data) < 12 {
+	req := new(dns.Msg)
+	if err := req.Unpack(data); err != nil {
 		return
 	}
 
-	transactionID := binary.BigEndian.Uint16(data[:2])
-	rdBit := uint16(data[2] & 0x01)
-
-	idx := 12
-	qname, idx := parseQName(data, idx)
-	if idx+4 > len(data) {
+	if len(req.Question) == 0 {
 		return
 	}
 
-	qtype := binary.BigEndian.Uint16(data[idx : idx+2])
+	q := req.Question[0]
+	qname := strings.TrimSuffix(strings.ToLower(q.Name), ".")
 	fqdn := dns.Fqdn(qname)
 
 	msg := new(dns.Msg)
-	msg.Id = transactionID
-	msg.Response = true
+	msg.SetReply(req)
 	msg.Authoritative = true
-	msg.RecursionDesired = (rdBit != 0)
-	msg.Question = []dns.Question{
-		{Name: fqdn, Qtype: qtype, Qclass: dns.ClassINET},
+	msg.RecursionAvailable = false
+
+	doBit := false
+	if opt := req.IsEdns0(); opt != nil {
+		doBit = opt.Do()
+		msg.SetEdns0(1232, doBit)
 	}
 
-	switch qtype {
+	switch q.Qtype {
 
 	case dns.TypeA:
 		ip, ttl := querySingleRecord(qname, "A")
@@ -154,6 +174,10 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 
 	case dns.TypeNS:
 		nsHosts := parseCSV(appSettings.GetValue("dns.ns_hosts"))
+		if len(nsHosts) == 0 {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
 		for _, ns := range nsHosts {
 			addRR(msg, fmt.Sprintf(
 				"%s 3600 IN NS %s",
@@ -182,8 +206,74 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 			rname,
 		))
 
+	case dns.TypeDNSKEY:
+		if !settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) {
+			msg.Rcode = dns.RcodeNotImplemented
+			break
+		}
+		zone := findAuthoritativeZone(qname)
+		if zone == "" || fqdn != dns.Fqdn(zone) {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
+		material, err := getOrCreateDNSSECKey()
+		if err != nil {
+			log.Println("DNSSEC key load failed:", err)
+			msg.Rcode = dns.RcodeServerFailure
+			break
+		}
+		keyCopy := *material.Key
+		keyCopy.Hdr = dns.RR_Header{Name: dns.Fqdn(zone), Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 3600}
+		msg.Answer = append(msg.Answer, &keyCopy)
+		if sig := signRRSet(msg.Answer, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
+			msg.Answer = append(msg.Answer, sig)
+		}
+
+	case dns.TypeDS:
+		if !settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) {
+			msg.Rcode = dns.RcodeNotImplemented
+			break
+		}
+		zone := findAuthoritativeZone(qname)
+		if zone == "" || fqdn != dns.Fqdn(zone) {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
+		material, err := getOrCreateDNSSECKey()
+		if err != nil {
+			log.Println("DNSSEC key load failed:", err)
+			msg.Rcode = dns.RcodeServerFailure
+			break
+		}
+		keyCopy := *material.Key
+		keyCopy.Hdr = dns.RR_Header{Name: dns.Fqdn(zone), Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 3600}
+		ds := keyCopy.ToDS(dns.SHA256)
+		if ds == nil {
+			msg.Rcode = dns.RcodeServerFailure
+			break
+		}
+		ds.Hdr = dns.RR_Header{Name: dns.Fqdn(zone), Rrtype: dns.TypeDS, Class: dns.ClassINET, Ttl: 3600}
+		msg.Answer = append(msg.Answer, ds)
+		if sig := signRRSet(msg.Answer, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
+			msg.Answer = append(msg.Answer, sig)
+		}
+
 	default:
 		msg.Rcode = dns.RcodeNotImplemented
+	}
+
+	if msg.Rcode == dns.RcodeSuccess && len(msg.Answer) > 0 &&
+		doBit && settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) &&
+		q.Qtype != dns.TypeDNSKEY && q.Qtype != dns.TypeDS && q.Qtype != dns.TypeRRSIG {
+		zone := findAuthoritativeZone(qname)
+		if zone != "" {
+			material, err := getOrCreateDNSSECKey()
+			if err != nil {
+				log.Println("DNSSEC key load failed:", err)
+			} else if sig := signRRSet(msg.Answer, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
+				msg.Answer = append(msg.Answer, sig)
+			}
+		}
 	}
 
 	buf, err := msg.Pack()
@@ -196,26 +286,6 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 }
 
 /* ================= HELPERS ================= */
-
-func parseQName(msg []byte, offset int) (string, int) {
-	var labels []string
-	for {
-		if offset >= len(msg) {
-			return "", len(msg)
-		}
-		l := int(msg[offset])
-		offset++
-		if l == 0 {
-			break
-		}
-		if offset+l > len(msg) {
-			return "", len(msg)
-		}
-		labels = append(labels, string(msg[offset:offset+l]))
-		offset += l
-	}
-	return strings.Join(labels, "."), offset
-}
 
 func addRR(msg *dns.Msg, rrStr string) {
 	rr, err := dns.NewRR(rrStr)
@@ -262,6 +332,129 @@ func queryMultiRecords(domain, rtype string) []RecordWithTTL {
 }
 
 var appSettings = services.NewSettingsService()
+
+func findAuthoritativeZone(qname string) string {
+	var zone string
+	err := db.DB.QueryRow(`
+		SELECT name
+		FROM domains
+		WHERE ? = name OR ? LIKE CONCAT('%.', name)
+		ORDER BY LENGTH(name) DESC
+		LIMIT 1
+	`, qname, qname).Scan(&zone)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+}
+
+func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
+	dnssecCache.mu.Lock()
+	defer dnssecCache.mu.Unlock()
+
+	if dnssecCache.material != nil {
+		return dnssecCache.material, nil
+	}
+
+	pemValue := appSettings.GetValue("dns.dnssec_private_key_pem")
+	if strings.TrimSpace(pemValue) == "" {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(priv)
+		if err != nil {
+			return nil, err
+		}
+		pemValue = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: der,
+		}))
+		if err := appSettings.SetMany(map[string]string{
+			"dns.dnssec_private_key_pem": pemValue,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	block, _ := pem.Decode([]byte(pemValue))
+	if block == nil {
+		return nil, errors.New("invalid dns.dnssec_private_key_pem")
+	}
+
+	pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	priv, ok := pk.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("dnssec private key must be Ed25519")
+	}
+
+	pub := priv.Public().(ed25519.PublicKey)
+	key := &dns.DNSKEY{
+		Flags:     257,
+		Protocol:  3,
+		Algorithm: dns.ED25519,
+		PublicKey: base64.StdEncoding.EncodeToString(pub),
+	}
+	key.Hdr = dns.RR_Header{
+		Name:   ".",
+		Rrtype: dns.TypeDNSKEY,
+		Class:  dns.ClassINET,
+		Ttl:    3600,
+	}
+
+	dnssecCache.material = &dnssecKeyMaterial{
+		Key:    key,
+		Signer: priv,
+	}
+	return dnssecCache.material, nil
+}
+
+func signRRSet(rrset []dns.RR, key *dns.DNSKEY, signer ed25519.PrivateKey, signerName string) *dns.RRSIG {
+	if len(rrset) == 0 {
+		return nil
+	}
+	h := rrset[0].Header()
+	sig := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name:   h.Name,
+			Rrtype: dns.TypeRRSIG,
+			Class:  h.Class,
+			Ttl:    h.Ttl,
+		},
+		TypeCovered: h.Rrtype,
+		Algorithm:   key.Algorithm,
+		Labels:      uint8(dns.CountLabel(h.Name)),
+		OrigTtl:     h.Ttl,
+		Expiration:  uint32(time.Now().Add(24 * time.Hour).Unix()),
+		Inception:   uint32(time.Now().Add(-5 * time.Minute).Unix()),
+		KeyTag:      key.KeyTag(),
+		SignerName:  dns.Fqdn(signerName),
+	}
+	if err := sig.Sign(signer, rrset); err != nil {
+		log.Println("DNSSEC sign failed:", err)
+		return nil
+	}
+	return sig
+}
+
+func settingEnabled(raw string, defaultValue bool) bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return defaultValue
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
 
 func parseCSV(input string) []string {
 	parts := strings.Split(input, ",")

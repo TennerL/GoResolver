@@ -267,7 +267,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
 		return err
 	}
-	localIP := isLocalIP(ip)
+	//localIP := isLocalIP(ip)
 
 	ddosPrefix := fmt.Sprintf("GoResolver:DDoS:%s:", serverID)
 	_ = s.DeleteRuleByComment("INPUT", "filter", ddosPrefix)
@@ -280,10 +280,10 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if len(ports) == 0 {
 		ports = []int{80, 443}
 	}
-	destIP := ""
-	if localIP && strings.TrimSpace(ip) != "" {
-		destIP = ip
-	}
+	//destIP := ""
+	//if localIP && strings.TrimSpace(ip) != "" {
+	//	destIP = ip
+	//}
 
 	whitelist := normalizeWhitelistEntries(p.Whitelist)
 	if len(whitelist) > 0 {
@@ -304,8 +304,8 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 					Action:    "insert",
 					Position:  insertAt,
 					Protocol:  "tcp",
-					SourceIP:  entry,
-					DestIP:    destIP,
+					SourceIP:  ip,
+					DestIP:    entry,
 					DestPort:  port,
 					Target:    "ACCEPT",
 					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
@@ -325,7 +325,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				DestIP:   destIP,
+				SourceIP:  ip,
 				DestPort: port,
 				ConnLimit: &cl,
 				Target:   "DROP",
@@ -348,7 +348,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				DestIP:   destIP,
+				SourceIP: ip,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -372,7 +372,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Action:   "append",
 				Protocol: "tcp",
 				SynOnly:  true,
-				DestIP:   destIP,
+				SourceIP: ip,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -961,7 +961,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 					'  default_type text/html;\n',
 					'  add_header Cache-Control \"no-store\";\n',
 					'  add_header Set-Cookie \"gr_challenge_', sc.id, '=1; Path=/; Max-Age=', IFNULL(dp.cookie_ttl, 3600), '; SameSite=Lax\";\n',
-					'  return 200 \"<!doctype html><html><head><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\"><title>Checking your browser</title><style>body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#111827}main{max-width:720px;margin:8vh auto;padding:24px}header{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#f97316,#f43f5e);display:grid;place-items:center;color:#fff;font-weight:700}.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px;box-shadow:0 6px 16px rgba(15,23,42,.08)}.muted{color:#6b7280;font-size:14px} .status{display:flex;align-items:center;gap:10px;margin:18px 0} .spinner{width:18px;height:18px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} .footer{margin-top:18px;font-size:12px;color:#9ca3af}</style></head><body><main><header><div class=\\\"logo\\\">GR</div><div><div style=\\\"font-weight:700\\\">GoResolver Security</div><div class=\\\"muted\\\">DDoS protection check</div></div></header><div class=\\\"card\\\"><div style=\\\"font-weight:700;font-size:18px\\\">Checking your browser before accessing the site</div><div class=\\\"muted\\\">This process is automatic. Your browser will redirect shortly.</div><div class=\\\"status\\\"><div class=\\\"spinner\\\"></div><div class=\\\"muted\\\">Analyzing request...</div></div><div class=\\\"muted\\\">Please allow up to a few seconds.</div></div><div class=\\\"footer\\\">Protected by GoResolver</div></main><script>document.cookie=\\\"gr_challenge_', sc.id, '=1; path=/; max-age=', IFNULL(dp.cookie_ttl, 3600), '\\\";var u=new URLSearchParams(window.location.search).get(\\\"u\\\")||\\\"/\\\";setTimeout(function(){window.location=u;},', IFNULL(dp.challenge_delay, 5), '000);</script></body></html>\";\n',
+					'  return 200 \"<!doctype html><html><head><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\"><title>Checking your browser</title><style>:root{--bg0:#070b14;--bg1:#0b1220;--panel:#0f1a2b;--border:rgba(255,255,255,.08);--text:#e5e7eb;--muted:#9ca3af;--muted2:#6b7280;--accent:#f48120;--link:#93c5fd}*{box-sizing:border-box}html,body{height:100%}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,\\\"Apple Color Emoji\\\",\\\"Segoe UI Emoji\\\";background:linear-gradient(180deg,var(--bg0),var(--bg1));color:var(--text);overflow-x:hidden}body:before{content:\\\"\\\";position:fixed;inset:-20vmax;pointer-events:none;background:radial-gradient(1200px 700px at 18% 6%,rgba(244,129,32,.10),transparent 60%),radial-gradient(1100px 650px at 92% 10%,rgba(59,130,246,.09),transparent 62%),radial-gradient(900px 520px at 50% 110%,rgba(255,255,255,.04),transparent 60%);filter:blur(18px);transform:translateZ(0);opacity:.95}main{position:relative;max-width:760px;margin:8vh auto;padding:24px}header{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#fb7185);display:grid;place-items:center;color:#070b14;font-weight:800;letter-spacing:.5px}.brand{display:flex;flex-direction:column;gap:2px}.brand .name{font-weight:800}.brand .tag{color:var(--muted);font-size:13px}.card{background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.02));border:1px solid var(--border);border-radius:14px;padding:24px;box-shadow:0 14px 40px rgba(0,0,0,.38);backdrop-filter:blur(6px)}.muted{color:var(--muted);font-size:14px;line-height:1.5}.title{font-weight:800;font-size:18px;letter-spacing:.2px}.status{display:flex;align-items:center;gap:10px;margin:18px 0;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}.spinner{width:18px;height:18px;border:3px solid rgba(229,231,235,.18);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.hr{height:1px;background:rgba(255,255,255,.07);margin:16px 0}.footer{margin-top:18px;font-size:12px;color:var(--muted2);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(244,129,32,.15)}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}@media (min-height:900px){main{margin:10vh auto}}@media (prefers-reduced-motion:reduce){.spinner{animation:none}}</style></head><body><main><header><div class=\\\"logo\\\">GR</div><div class=\\\"brand\\\"><div class=\\\"name\\\">GoResolver Security</div><div class=\\\"tag\\\">DDoS protection check</div></div></header><div class=\\\"card\\\"><div class=\\\"title\\\">Checking your browser before accessing the site</div><div class=\\\"muted\\\">This process is automatic. Your browser will redirect shortly.</div><div class=\\\"status\\\"><div class=\\\"spinner\\\"></div><div class=\\\"muted\\\">Verifying your connection…</div></div><div class=\\\"muted\\\">Please allow up to a few seconds.</div><div class=\\\"hr\\\"></div><div class=\\\"muted\\\">If you are seeing this page repeatedly, enable cookies and disable any blockers for this site.</div></div><div class=\\\"footer\\\"><span class=\\\"pill\\\"><span class=\\\"dot\\\"></span>Protected by GoResolver</span><span class=\\\"muted\\\">Performance &amp; security by GoResolver</span></div></main><script>document.cookie=\\\"gr_challenge_', sc.id, '=1; path=/; max-age=', IFNULL(dp.cookie_ttl, 3600), '\\\";var u=new URLSearchParams(window.location.search).get(\\\"u\\\")||\\\"/\\\";setTimeout(function(){window.location=u;},', IFNULL(dp.challenge_delay, 5), '000);</script></body></html>\";\n',
 					' }\n\n'
 				),
 				''
