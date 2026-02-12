@@ -69,6 +69,7 @@ type Fail2BanPolicy struct {
 	StatusCodes      string
 	IgnoreIPs        string
 	UseXForwardedFor bool
+	BanGlobally      bool
 }
 
 type Fail2BanBan struct {

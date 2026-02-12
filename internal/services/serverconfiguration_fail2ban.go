@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,12 +32,14 @@ func (s *ServerConfigurationService) EnsureFail2BanTables() error {
 			status_codes VARCHAR(128) NOT NULL DEFAULT '403',
 			ignore_ips TEXT,
 			use_x_forwarded_for TINYINT(1) NOT NULL DEFAULT 0,
+			ban_globally TINYINT(1) NOT NULL DEFAULT 0,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
 		return err
 	}
+	_, _ = db.DB.Exec(`ALTER TABLE fail2ban_policies ADD COLUMN ban_globally TINYINT(1) NOT NULL DEFAULT 0`)
 	_, err = db.DB.Exec(`
 		CREATE TABLE IF NOT EXISTS fail2ban_bans (
 			id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -61,8 +64,9 @@ func (s *ServerConfigurationService) GetFail2BanPolicy(serverID string) (models.
 	var p models.Fail2BanPolicy
 	var enabled int
 	var useXff int
+	var banGlobally int
 	err := db.DB.QueryRow(`
-		SELECT server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, IFNULL(ignore_ips, ''), use_x_forwarded_for
+		SELECT server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, IFNULL(ignore_ips, ''), use_x_forwarded_for, ban_globally
 		FROM fail2ban_policies
 		WHERE server_id = ?
 	`, serverID).Scan(
@@ -74,6 +78,7 @@ func (s *ServerConfigurationService) GetFail2BanPolicy(serverID string) (models.
 		&p.StatusCodes,
 		&p.IgnoreIPs,
 		&useXff,
+		&banGlobally,
 	)
 	if err == sql.ErrNoRows {
 		return models.Fail2BanPolicy{
@@ -84,6 +89,7 @@ func (s *ServerConfigurationService) GetFail2BanPolicy(serverID string) (models.
 			BanTimeSeconds:   fail2BanDefaultBanTime,
 			StatusCodes:      fail2BanDefaultStatuses,
 			UseXForwardedFor: false,
+			BanGlobally:      false,
 		}, nil
 	}
 	if err != nil {
@@ -91,6 +97,7 @@ func (s *ServerConfigurationService) GetFail2BanPolicy(serverID string) (models.
 	}
 	p.Enabled = enabled == 1
 	p.UseXForwardedFor = useXff == 1
+	p.BanGlobally = banGlobally == 1
 	if p.MaxRetry <= 0 {
 		p.MaxRetry = fail2BanDefaultMaxRetry
 	}
@@ -118,6 +125,10 @@ func (s *ServerConfigurationService) SaveFail2BanPolicy(p models.Fail2BanPolicy)
 	if p.UseXForwardedFor {
 		useXff = 1
 	}
+	banGlobally := 0
+	if p.BanGlobally {
+		banGlobally = 1
+	}
 	if p.MaxRetry <= 0 {
 		p.MaxRetry = fail2BanDefaultMaxRetry
 	}
@@ -133,8 +144,8 @@ func (s *ServerConfigurationService) SaveFail2BanPolicy(p models.Fail2BanPolicy)
 
 	_, err := db.DB.Exec(`
 		INSERT INTO fail2ban_policies (
-			server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, ignore_ips, use_x_forwarded_for
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, ignore_ips, use_x_forwarded_for, ban_globally
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			enabled = VALUES(enabled),
 			max_retry = VALUES(max_retry),
@@ -142,9 +153,10 @@ func (s *ServerConfigurationService) SaveFail2BanPolicy(p models.Fail2BanPolicy)
 			ban_time_seconds = VALUES(ban_time_seconds),
 			status_codes = VALUES(status_codes),
 			ignore_ips = VALUES(ignore_ips),
-			use_x_forwarded_for = VALUES(use_x_forwarded_for)
+			use_x_forwarded_for = VALUES(use_x_forwarded_for),
+			ban_globally = VALUES(ban_globally)
 	`,
-		p.ServerID, enabled, p.MaxRetry, p.FindTimeSeconds, p.BanTimeSeconds, p.StatusCodes, p.IgnoreIPs, useXff,
+		p.ServerID, enabled, p.MaxRetry, p.FindTimeSeconds, p.BanTimeSeconds, p.StatusCodes, p.IgnoreIPs, useXff, banGlobally,
 	)
 	return err
 }
@@ -202,7 +214,7 @@ func (s *ServerConfigurationService) EnforceFail2BanOnce() {
 	}
 
 	rows, err := db.DB.Query(`
-		SELECT server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, IFNULL(ignore_ips, ''), use_x_forwarded_for
+		SELECT server_id, enabled, max_retry, find_time_seconds, ban_time_seconds, status_codes, IFNULL(ignore_ips, ''), use_x_forwarded_for, ban_globally
 		FROM fail2ban_policies
 		WHERE enabled = 1
 	`)
@@ -216,6 +228,7 @@ func (s *ServerConfigurationService) EnforceFail2BanOnce() {
 		var p models.Fail2BanPolicy
 		var enabled int
 		var useXff int
+		var banGlobally int
 		if err := rows.Scan(
 			&p.ServerID,
 			&enabled,
@@ -225,11 +238,13 @@ func (s *ServerConfigurationService) EnforceFail2BanOnce() {
 			&p.StatusCodes,
 			&p.IgnoreIPs,
 			&useXff,
+			&banGlobally,
 		); err != nil {
 			continue
 		}
 		p.Enabled = enabled == 1
 		p.UseXForwardedFor = useXff == 1
+		p.BanGlobally = banGlobally == 1
 		if !p.Enabled {
 			continue
 		}
@@ -375,9 +390,12 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 
 	comment := fail2BanRuleComment(p.ServerID, ip)
 	chain := "INPUT"
-	sourceIP := ""
-	if strings.TrimSpace(serverIP) != "" {
-		sourceIP = serverIP
+	sourceIP := ip
+	destIP := strings.TrimSpace(serverIP)
+	if p.BanGlobally {
+		if resolved := s.resolveLocalBanDestinationIP(); resolved != "" {
+			destIP = resolved
+		}
 	}
 	if err := s.AddRule(models.IPTablesRuleSpec{
 		Table:    "filter",
@@ -386,7 +404,7 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 		Position: 1,
 		Protocol: "tcp",
 		SourceIP: sourceIP,
-		DestIP:   ip,
+		DestIP:   destIP,
 		Target:   "DROP",
 		Comment:  comment,
 	}); err != nil {
@@ -546,4 +564,43 @@ func placeholders(n int) string {
 
 func fail2BanRuleComment(serverID, ip string) string {
 	return fmt.Sprintf("GoResolver:Fail2Ban:%s:%s", serverID, ip)
+}
+
+func (s *ServerConfigurationService) resolveLocalBanDestinationIP() string {
+	settings := NewSettingsService()
+	candidates := []string{
+		strings.TrimSpace(settings.GetValue("app.base_url")),
+		strings.TrimSpace(settings.GetValue("openvpn.remote_host")),
+	}
+	for _, raw := range candidates {
+		if raw == "" {
+			continue
+		}
+		host := raw
+		if strings.Contains(raw, "://") {
+			if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+				host = u.Hostname()
+			}
+		}
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if v4 := ip.To4(); v4 != nil {
+				return v4.String()
+			}
+			continue
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			if v4 := ip.To4(); v4 != nil {
+				return v4.String()
+			}
+		}
+	}
+	return ""
 }

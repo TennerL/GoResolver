@@ -526,6 +526,11 @@
                         <input type="checkbox" name="fail2ban_use_xff" value="1" {{ if .Fail2BanPolicy.UseXForwardedFor }}checked{{ end }}>
                     </div>
 
+                    <div class="flex items-center gap-4">
+                        <label class="font-medium">Ban globally</label>
+                        <input type="checkbox" name="fail2ban_ban_globally" value="1" {{ if .Fail2BanPolicy.BanGlobally }}checked{{ end }}>
+                    </div>
+
                     <div class="text-sm text-gray-500">
                         Fail2Ban settings are saved with the main Save button on the right.
                     </div>

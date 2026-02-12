@@ -377,19 +377,9 @@ func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
 		}
 	}
 
-	block, _ := pem.Decode([]byte(pemValue))
-	if block == nil {
-		return nil, errors.New("invalid dns.dnssec_private_key_pem")
-	}
-
-	pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	priv, err := parseDNSSECPrivateKey(pemValue)
 	if err != nil {
 		return nil, err
-	}
-
-	priv, ok := pk.(ed25519.PrivateKey)
-	if !ok {
-		return nil, errors.New("dnssec private key must be Ed25519")
 	}
 
 	pub := priv.Public().(ed25519.PublicKey)
@@ -411,6 +401,83 @@ func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
 		Signer: priv,
 	}
 	return dnssecCache.material, nil
+}
+
+func parseDNSSECPrivateKey(raw string) (ed25519.PrivateKey, error) {
+	// Allow pasted values wrapped in quotes and with escaped newlines.
+	value := strings.TrimSpace(raw)
+	value = strings.Trim(value, `"'`)
+	if strings.Contains(value, `\n`) {
+		value = strings.ReplaceAll(value, `\n`, "\n")
+	}
+	value = normalizeCompactPrivateKeyPEM(value)
+
+	// Preferred format: PKCS#8 PEM Ed25519 private key.
+	if block, _ := pem.Decode([]byte(value)); block != nil {
+		pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err == nil {
+			if priv, ok := pk.(ed25519.PrivateKey); ok {
+				return priv, nil
+			}
+			return nil, errors.New("dnssec private key must be Ed25519")
+		}
+	}
+
+	// Compatibility format: BIND dnssec-keygen .private file content.
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "PrivateKey:") {
+			continue
+		}
+		b64 := strings.TrimSpace(strings.TrimPrefix(line, "PrivateKey:"))
+		rawKey, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		switch len(rawKey) {
+		case ed25519.SeedSize:
+			return ed25519.NewKeyFromSeed(rawKey), nil
+		case ed25519.PrivateKeySize:
+			return ed25519.PrivateKey(rawKey), nil
+		}
+	}
+
+	return nil, errors.New("invalid dns.dnssec_private_key_pem")
+}
+
+func normalizeCompactPrivateKeyPEM(value string) string {
+	const begin = "-----BEGIN PRIVATE KEY-----"
+	const end = "-----END PRIVATE KEY-----"
+	if !strings.Contains(value, begin) || !strings.Contains(value, end) {
+		return value
+	}
+	bi := strings.Index(value, begin)
+	ei := strings.Index(value, end)
+	if bi < 0 || ei < 0 || ei <= bi {
+		return value
+	}
+	body := strings.TrimSpace(value[bi+len(begin) : ei])
+	body = strings.ReplaceAll(body, "\n", "")
+	body = strings.ReplaceAll(body, "\r", "")
+	body = strings.ReplaceAll(body, "\t", "")
+	body = strings.ReplaceAll(body, " ", "")
+	if body == "" {
+		return value
+	}
+	var b strings.Builder
+	b.WriteString(begin)
+	b.WriteString("\n")
+	for i := 0; i < len(body); i += 64 {
+		j := i + 64
+		if j > len(body) {
+			j = len(body)
+		}
+		b.WriteString(body[i:j])
+		b.WriteString("\n")
+	}
+	b.WriteString(end)
+	b.WriteString("\n")
+	return b.String()
 }
 
 func signRRSet(rrset []dns.RR, key *dns.DNSKEY, signer ed25519.PrivateKey, signerName string) *dns.RRSIG {

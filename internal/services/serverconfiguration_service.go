@@ -232,6 +232,9 @@ func (s *ServerConfigurationService) SaveDDoSPolicy(p models.DDoSPolicy) error {
 	if err := s.EnsureDDoSTables(); err != nil {
 		return err
 	}
+	normalizedWhitelist := normalizeWhitelistEntries(p.Whitelist)
+	p.Whitelist = strings.Join(normalizedWhitelist, ",")
+
 	enabled := 0
 	if p.Enabled {
 		enabled = 1
@@ -267,7 +270,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
 		return err
 	}
-	//localIP := isLocalIP(ip)
+	localIP := isLocalIP(ip)
 
 	ddosPrefix := fmt.Sprintf("GoResolver:DDoS:%s:", serverID)
 	_ = s.DeleteRuleByComment("INPUT", "filter", ddosPrefix)
@@ -280,10 +283,10 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if len(ports) == 0 {
 		ports = []int{80, 443}
 	}
-	//destIP := ""
-	//if localIP && strings.TrimSpace(ip) != "" {
-	//	destIP = ip
-	//}
+	destIP := ""
+	if localIP && strings.TrimSpace(ip) != "" {
+		destIP = ip
+	}
 
 	whitelist := normalizeWhitelistEntries(p.Whitelist)
 	if len(whitelist) > 0 {
@@ -304,8 +307,8 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 					Action:    "insert",
 					Position:  insertAt,
 					Protocol:  "tcp",
-					SourceIP:  ip,
-					DestIP:    entry,
+					SourceIP:  entry,
+					DestIP:    destIP,
 					DestPort:  port,
 					Target:    "ACCEPT",
 					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
@@ -325,7 +328,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				SourceIP:  ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ConnLimit: &cl,
 				Target:   "DROP",
@@ -348,7 +351,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Chain:    "INPUT",
 				Action:   "append",
 				Protocol: "tcp",
-				SourceIP: ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -372,7 +375,7 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				Action:   "append",
 				Protocol: "tcp",
 				SynOnly:  true,
-				SourceIP: ip,
+				DestIP:   destIP,
 				DestPort: port,
 				ExtraArgs: args,
 				Target:   "DROP",
@@ -875,8 +878,28 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			CONCAT(
 			-- Websockets map if enabled
 			IF(sc.websockets = 1, 
-				'map $http_upgrade $connection_upgrade {\n default upgrade;\n ''''      close;\n}\n\n', 
+				'map $http_upgrade $connection_upgrade {\n default upgrade;\n ''''      "";\n}\n\n', 
 				''
+			),
+			CONCAT(
+				'map $http_x_forwarded_proto $gr_forwarded_proto_', sc.id, ' {\n',
+				' default $scheme;\n',
+				' ~*https https;\n',
+				' ~*http http;\n',
+				'}\n\n'
+			),
+			CONCAT(
+				'map $gr_forwarded_proto_', sc.id, ' $gr_forwarded_port_', sc.id, ' {\n',
+				' default $server_port;\n',
+				' https 443;\n',
+				' http 80;\n',
+				'}\n\n'
+			),
+			CONCAT(
+				'map $gr_forwarded_proto_', sc.id, ' $gr_forwarded_ssl_', sc.id, ' {\n',
+				' default off;\n',
+				' https on;\n',
+				'}\n\n'
 			),
 
 			-- DDoS zones and challenge map
@@ -885,8 +908,17 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 				CONCAT(
 					'geo $gr_ddos_whitelist_', sc.id, ' {\n',
 					'  default 0;\n',
-					IF(IFNULL(dp.whitelist, '') <> '',
-						CONCAT('  ', REPLACE(REPLACE(REPLACE(REPLACE(dp.whitelist, '\r', ''), '\n', ''), ' ', ''), ',', ';\n  '), ';\n'),
+					IF(
+						TRIM(BOTH ',' FROM REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(dp.whitelist, ''), '\r', ''), '\n', ','), ';', ','), ' ', ''), ',,', ','), ',,', ',')) <> '',
+						CONCAT(
+							'  ',
+							REPLACE(
+								TRIM(BOTH ',' FROM REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(dp.whitelist, ''), '\r', ''), '\n', ','), ';', ','), ' ', ''), ',,', ','), ',,', ',')),
+								',',
+								' 1;\n  '
+							),
+							' 1;\n'
+						),
 						''
 					),
 					'}\n\n'
@@ -942,6 +974,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			' server_name ', IFNULL(sc.server_name, ''), ';\n\n',
 			' set $gr_ray_id \"GR-$request_id\";\n',
 			' add_header X-Ray-ID $gr_ray_id always;\n',
+			' add_header Content-Security-Policy \"upgrade-insecure-requests\" always;\n',
 
 			-- SSL certificate if enabled
 			IF(sc.ssl_enabled = 1, CONCAT(
@@ -982,19 +1015,26 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 				''
 			),
 			' proxy_pass http://', IFNULL(s.ip, ''), ':', IFNULL(sc.proxy_pass_port, ''), ';\n',
-			IF(sc.proxy_intercept_errors = 1, CONCAT(
-				' proxy_connect_timeout ', sc.proxy_connect_timeout, 's;\n',
-				' proxy_read_timeout ', sc.proxy_read_timeout, 's;\n',
-				' proxy_send_timeout ', sc.proxy_send_timeout, 's;\n'
-			), ''),
+			' proxy_http_version 1.1;\n',
+			' proxy_connect_timeout ', IF(sc.proxy_connect_timeout < 5, 5, sc.proxy_connect_timeout), 's;\n',
+			' proxy_read_timeout ', IF(sc.proxy_read_timeout < 300, 300, sc.proxy_read_timeout), 's;\n',
+			' proxy_send_timeout ', IF(sc.proxy_send_timeout < 300, 300, sc.proxy_send_timeout), 's;\n',
+			' proxy_buffering off;\n',
+			' proxy_request_buffering off;\n',
+			' proxy_force_ranges on;\n',
 			IF(sc.websockets = 1, 
-				' proxy_http_version 1.1;\n proxy_set_header Upgrade $http_upgrade;\n proxy_set_header Connection $connection_upgrade;\n', 
+				' proxy_set_header Upgrade $http_upgrade;\n proxy_set_header Connection $connection_upgrade;\n', 
 				''
 			),
 			' proxy_set_header Host $host;\n',
+			' proxy_set_header X-Forwarded-Host $host;\n',
 			' proxy_set_header X-Real-IP $remote_addr;\n',
 			' proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n',
-			' proxy_set_header X-Forwarded-Proto $scheme;\n',
+			' proxy_set_header X-Forwarded-Port $gr_forwarded_port_', sc.id, ';\n',
+			' proxy_set_header X-Forwarded-Proto $gr_forwarded_proto_', sc.id, ';\n',
+			' proxy_set_header X-Forwarded-Ssl $gr_forwarded_ssl_', sc.id, ';\n',
+			' proxy_set_header Forwarded "for=$proxy_add_x_forwarded_for;proto=$gr_forwarded_proto_', sc.id, ';host=$host";\n',
+			' proxy_redirect http:// https://;\n',
 
 			-- Error pages directives
 			IF(sc.proxy_intercept_errors = 1, CONCAT(
@@ -1048,7 +1088,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 	}
 
 	if shouldEnableTransparentProxy() {
-		marker := " proxy_set_header X-Forwarded-Proto $scheme;\n"
+		marker := " proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
 		inject := marker + " proxy_bind $remote_addr transparent;\n"
 		if strings.Contains(config, marker) && !strings.Contains(config, "proxy_bind $remote_addr transparent;") {
 			config = strings.Replace(config, marker, inject, 1)

@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS fail2ban_policies (
     status_codes VARCHAR(128) NOT NULL DEFAULT '403',
     ignore_ips TEXT,
     use_x_forwarded_for TINYINT(1) NOT NULL DEFAULT 0,
+    ban_globally TINYINT(1) NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 

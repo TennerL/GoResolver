@@ -955,6 +955,7 @@ func (h *ServerConfigurationHandler) applyFail2BanFromForm(r *http.Request, serv
 	statusCodes := strings.TrimSpace(r.FormValue("fail2ban_status_codes"))
 	ignoreIPs := strings.TrimSpace(r.FormValue("fail2ban_ignore_ips"))
 	useXff := r.FormValue("fail2ban_use_xff") == "1"
+	banGlobally := r.FormValue("fail2ban_ban_globally") == "1"
 
 	policy := models.Fail2BanPolicy{
 		ServerID:         serverID,
@@ -965,6 +966,7 @@ func (h *ServerConfigurationHandler) applyFail2BanFromForm(r *http.Request, serv
 		StatusCodes:      statusCodes,
 		IgnoreIPs:        ignoreIPs,
 		UseXForwardedFor: useXff,
+		BanGlobally:      banGlobally,
 	}
 
 	if err := h.Service.SaveFail2BanPolicy(policy); err != nil {
