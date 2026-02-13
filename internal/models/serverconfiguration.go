@@ -6,6 +6,7 @@ type ServerConfiguration struct {
 	Server_Port int
 	SSL_Enabled int
 	SSL_Redirect int
+	HSTS int
 	Proxy_Pass_Port int
 	Proxy_Intercept_Errors int
 	Proxy_Connect_Timeout int 

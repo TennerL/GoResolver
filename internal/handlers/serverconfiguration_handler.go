@@ -210,11 +210,12 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	serverPorts := r.Form["server_port[]"]
 	sslEnabled := r.Form["ssl_enabled[]"]
 	sslRedirect := r.Form["ssl_redirect[]"]
+	hstsEnabled := r.Form["hsts[]"]
 	proxyPassPorts := r.Form["proxy_pass_port[]"]
 	proxyErrors := r.Form["proxy_intercept_errors[]"]
 	websocketsEnabled := r.Form["Websockets[]"]
 
-	n := maxLen(ids, serverNames, serverPorts, sslEnabled, sslRedirect, proxyPassPorts, proxyErrors, websocketsEnabled)
+	n := maxLen(ids, serverNames, serverPorts, sslEnabled, sslRedirect, hstsEnabled, proxyPassPorts, proxyErrors, websocketsEnabled)
 	for i := 0; i < n; i++ {
 		idStr := valueAt(ids, i)
 		serverName := strings.TrimSpace(valueAt(serverNames, i))
@@ -226,6 +227,7 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 		serverPort, _ := strconv.Atoi(valueAt(serverPorts, i))
 		ssl, _ := strconv.Atoi(valueAt(sslEnabled, i))
 		ssl_redirect, _ := strconv.Atoi(valueAt(sslRedirect, i))
+		hsts, _ := strconv.Atoi(valueAt(hstsEnabled, i))
 		proxyPort, _ := strconv.Atoi(valueAt(proxyPassPorts, i))
 		proxyErr, _ := strconv.Atoi(valueAt(proxyErrors, i))
 		websockets, _ := strconv.Atoi(valueAt(websocketsEnabled, i))
@@ -238,6 +240,7 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 				Server_Port:            serverPort,
 				SSL_Enabled:            ssl,
 				SSL_Redirect:           ssl_redirect,
+				HSTS:                   hsts,
 				Proxy_Pass_Port:        proxyPort,
 				Proxy_Intercept_Errors: proxyErr,
 				Websockets:             websockets,
@@ -258,6 +261,7 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 				Server_Port:            serverPort,
 				SSL_Enabled:            ssl,
 				SSL_Redirect:           ssl_redirect,
+				HSTS:                   hsts,
 				Proxy_Pass_Port:        proxyPort,
 				Proxy_Intercept_Errors: proxyErr,
 				VPN_File:               vpnBytes,

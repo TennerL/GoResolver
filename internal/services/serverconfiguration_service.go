@@ -25,6 +25,7 @@ import (
 	"sort"
 	"math/big"
 	"net"
+	"sync"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -35,6 +36,8 @@ import (
 
 type ServerConfigurationService struct{}
 
+var ensureServerConfigurationSchemaOnce sync.Once
+
 // 32-byte AES-256 key
 var aesKey = []byte("12345678901234567890123456789012") // Replace with secure key in production
 
@@ -42,7 +45,29 @@ func NewServerConfigurationService() *ServerConfigurationService {
 	return &ServerConfigurationService{}
 }
 
+func ensureServerConfigurationSchema() error {
+	var ensureErr error
+	ensureServerConfigurationSchemaOnce.Do(func() {
+		_, err := db.DB.Exec(`
+			ALTER TABLE server_configuration
+			ADD COLUMN hsts TINYINT(1) NOT NULL DEFAULT 0 AFTER ssl_redirect
+		`)
+		if err != nil {
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "duplicate column") || !strings.Contains(msg, "hsts") {
+				ensureErr = err
+			}
+		}
+	})
+	return ensureErr
+}
+
 func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []models.ServerConfiguration {
+	if err := ensureServerConfigurationSchema(); err != nil {
+		log.Println("schema ensure failed:", err)
+		return nil
+	}
+
 	rows, err := db.DB.Query(`
 		SELECT
 			sc.id,
@@ -50,6 +75,7 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 			sc.server_port,
 			sc.ssl_enabled,
 			sc.ssl_redirect,
+			sc.hsts,
 			sc.proxy_pass_port,
 			sc.proxy_intercept_errors,
 			sc.proxy_connect_timeout,
@@ -89,6 +115,7 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 		&sc.Server_Port,
 		&sc.SSL_Enabled,
 		&sc.SSL_Redirect,
+		&sc.HSTS,
 		&sc.Proxy_Pass_Port,
 		&sc.Proxy_Intercept_Errors,
 		&sc.Proxy_Connect_Timeout,
@@ -462,6 +489,10 @@ func max(a, b int) int {
 }
 
 func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerConfiguration) error {
+	if err := ensureServerConfigurationSchema(); err != nil {
+		return err
+	}
+
 	result, err := db.DB.Exec(`
 		INSERT INTO server_configuration (
 			fk_server,
@@ -469,16 +500,18 @@ func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerC
 			server_port,
 			ssl_enabled,
 			ssl_redirect,
+			hsts,
 			proxy_pass_port,
 			proxy_intercept_errors,
 			websockets
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sc.ServerID,
 		sc.Server_Name,
 		sc.Server_Port,
 		sc.SSL_Enabled,
 		sc.SSL_Redirect,
+		sc.HSTS,
 		sc.Proxy_Pass_Port,
 		sc.Proxy_Intercept_Errors,
 		sc.Websockets,
@@ -497,12 +530,17 @@ func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerC
 }
 
 func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerConfiguration) error {
+	if err := ensureServerConfigurationSchema(); err != nil {
+		return err
+	}
+
 	result, err := db.DB.Exec(`
 		UPDATE server_configuration SET
 			server_name = ?,
 			server_port = ?,
 			ssl_enabled = ?,
 			ssl_redirect = ?,
+			hsts = ?,
 			proxy_pass_port = ?,
 			proxy_intercept_errors = ?,
 			websockets = ?
@@ -511,6 +549,7 @@ func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerC
 		sc.Server_Port,
 		sc.SSL_Enabled,
 		sc.SSL_Redirect,
+		sc.HSTS,
 		sc.Proxy_Pass_Port,
 		sc.Proxy_Intercept_Errors,
 		sc.Websockets,
@@ -866,6 +905,16 @@ func (s *ServerConfigurationService) UpdateErrorFile(id string, content []byte) 
 func GenerateNginxConfig(SiteName string) (string, error) {
 	var config string
 
+	if err := ensureServerConfigurationSchema(); err != nil {
+		return "", err
+	}
+
+	// Generated config can be large (challenge page HTML + multiple maps/locations).
+	// Prevent GROUP_CONCAT truncation that would produce broken nginx files.
+	if _, err := db.DB.Exec(`SET SESSION group_concat_max_len = 1024 * 1024`); err != nil {
+		return "", fmt.Errorf("set group_concat_max_len failed: %w", err)
+	}
+
 	if err := NewServerConfigurationService().EnsureDDoSTables(); err != nil {
 		return "", err
 	}
@@ -975,6 +1024,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 			' set $gr_ray_id \"GR-$request_id\";\n',
 			' add_header X-Ray-ID $gr_ray_id always;\n',
 			' add_header Content-Security-Policy \"upgrade-insecure-requests\" always;\n',
+			IF(sc.ssl_enabled = 1 AND IFNULL(sc.hsts, 0) = 1, ' add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;\n', ''),
 
 			-- SSL certificate if enabled
 			IF(sc.ssl_enabled = 1, CONCAT(
@@ -1069,7 +1119,7 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 				' listen 80;\n listen [::]:80;\n',
 				' server_name ', sc.server_name, ';\n',
 				' return 301 https://$host$request_uri;\n',
-				'}'
+				'}\n'
 			), '')
 			) AS site_config
 		FROM server_configuration sc
@@ -1089,7 +1139,10 @@ func GenerateNginxConfig(SiteName string) (string, error) {
 
 	if shouldEnableTransparentProxy() {
 		marker := " proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-		inject := marker + " proxy_bind $remote_addr transparent;\n"
+		inject := marker +
+			" set $gr_proxy_bind_addr off;\n" +
+			" if ($remote_addr !~ \":\") { set $gr_proxy_bind_addr $remote_addr; }\n" +
+			" proxy_bind $gr_proxy_bind_addr transparent;\n"
 		if strings.Contains(config, marker) && !strings.Contains(config, "proxy_bind $remote_addr transparent;") {
 			config = strings.Replace(config, marker, inject, 1)
 		}

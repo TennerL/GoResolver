@@ -34,6 +34,9 @@ func (h *SettingsHandler) Index(w http.ResponseWriter, r *http.Request) {
 
 		values := map[string]string{}
 		for _, item := range h.Service.EditableSettings() {
+			if item.ReadOnly {
+				continue
+			}
 			values[item.Key] = strings.TrimSpace(r.FormValue(item.Key))
 		}
 

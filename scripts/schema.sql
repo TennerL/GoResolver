@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS server_configuration (
     server_port INT NOT NULL DEFAULT 80,
     ssl_enabled TINYINT(1) NOT NULL DEFAULT 0,
     ssl_redirect TINYINT(1) NOT NULL DEFAULT 0,
+    hsts TINYINT(1) NOT NULL DEFAULT 0,
     proxy_pass_port INT NOT NULL DEFAULT 80,
     proxy_intercept_errors TINYINT(1) NOT NULL DEFAULT 0,
     proxy_connect_timeout INT NOT NULL DEFAULT 60,

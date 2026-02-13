@@ -6,6 +6,7 @@ type SettingItem struct {
 	Value string
 	Group string
 	Help  string
+	ReadOnly bool
 }
 
 type SettingsPageData struct {

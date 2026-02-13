@@ -3,7 +3,15 @@ package services
 import (
 	"GoResolver/internal/db"
 	"GoResolver/internal/models"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"github.com/miekg/dns"
 	"log"
+	"strings"
 )
 
 type SettingDefinition struct {
@@ -12,6 +20,7 @@ type SettingDefinition struct {
 	Group   string
 	Help    string
 	Default string
+	ReadOnly bool
 }
 
 type SettingsService struct{}
@@ -27,6 +36,8 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "dns.enabled", Label: "DNS enabled", Group: "DNS", Help: "Enable built-in DNS server listener", Default: "1"},
 	{Key: "dns.dnssec_enabled", Label: "DNSSEC enabled", Group: "DNS", Help: "Enable DNSSEC signing and DNSKEY/DS responses", Default: "0"},
 	{Key: "dns.dnssec_private_key_pem", Label: "DNSSEC private key PEM", Group: "DNS", Help: "PKCS#8 Ed25519 private key used for DNSSEC signing", Default: ""},
+	{Key: "dns.dnssec_public_key", Label: "DNSSEC public key", Group: "DNS", Help: "Derived from private key. Copy/paste for DNSKEY workflows", Default: "", ReadOnly: true},
+	{Key: "dns.dnssec_public_key_json", Label: "DNSSEC public key JSON", Group: "DNS", Help: "Derived JSON payload for external integrations", Default: "", ReadOnly: true},
 	{Key: "dns.ns_hosts", Label: "Authoritative NS hosts", Group: "DNS", Help: "Comma-separated list of NS hostnames", Default: "ns1.nsstatic.org.,ns2.nsstatic.org."},
 	{Key: "dns.primary_ns", Label: "Primary NS hostname", Group: "DNS", Help: "Used for NS status check", Default: "ns1.nsstatic.org"},
 	{Key: "dns.resolver_addr", Label: "DNS resolver address", Group: "DNS", Help: "Resolver used for NS checks", Default: "1.1.1.1:53"},
@@ -168,15 +179,151 @@ func (s *SettingsService) SetMany(values map[string]string) error {
 
 func (s *SettingsService) EditableSettings() []models.SettingItem {
 	values := s.GetAllWithDefaults()
+	if derived, err := deriveDNSSECPublicKey(values["dns.dnssec_private_key_pem"]); err == nil {
+		values["dns.dnssec_public_key"] = derived
+		values["dns.dnssec_public_key_json"] = buildDNSSECPublicKeyJSON(derived)
+	} else {
+		values["dns.dnssec_public_key"] = ""
+		values["dns.dnssec_public_key_json"] = ""
+	}
+
 	items := make([]models.SettingItem, 0, len(settingsDefinitions))
 	for _, def := range settingsDefinitions {
 		items = append(items, models.SettingItem{
-			Key:   def.Key,
-			Label: def.Label,
-			Value: values[def.Key],
-			Group: def.Group,
-			Help:  def.Help,
+			Key:      def.Key,
+			Label:    def.Label,
+			Value:    values[def.Key],
+			Group:    def.Group,
+			Help:     def.Help,
+			ReadOnly: def.ReadOnly,
 		})
 	}
 	return items
+}
+
+func deriveDNSSECPublicKey(rawPrivate string) (string, error) {
+	priv, err := parseDNSSECPrivateKeyForSettings(rawPrivate)
+	if err != nil {
+		return "", err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	return base64.StdEncoding.EncodeToString(pub), nil
+}
+
+func buildDNSSECPublicKeyJSON(publicKey string) string {
+	key := dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name:   ".",
+			Rrtype: dns.TypeDNSKEY,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		Flags:     257,
+		Protocol:  3,
+		Algorithm: dns.ED25519,
+		PublicKey: publicKey,
+	}
+
+	payload := map[string]any{
+		"extensions": map[string]any{
+			"secDns": map[string]any{
+				"dsData": []map[string]any{
+					{
+						"keyTag":     key.KeyTag(),
+						"alg":        int(dns.ED25519),
+						"digestType": 2,
+						"digest":     "",
+						"keyData": map[string]any{
+							"flags":    257,
+							"protocol": 3,
+							"alg":      int(dns.ED25519),
+							"pubKey":   publicKey,
+						},
+					},
+				},
+			},
+		},
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func parseDNSSECPrivateKeyForSettings(raw string) (ed25519.PrivateKey, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, errors.New("empty private key")
+	}
+	value = strings.Trim(value, `"'`)
+	if strings.Contains(value, `\n`) {
+		value = strings.ReplaceAll(value, `\n`, "\n")
+	}
+	value = normalizeCompactPrivateKeyPEMForSettings(value)
+
+	if block, _ := pem.Decode([]byte(value)); block != nil {
+		pk, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err == nil {
+			if priv, ok := pk.(ed25519.PrivateKey); ok {
+				return priv, nil
+			}
+			return nil, errors.New("dnssec private key must be Ed25519")
+		}
+	}
+
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "PrivateKey:") {
+			continue
+		}
+		b64 := strings.TrimSpace(strings.TrimPrefix(line, "PrivateKey:"))
+		rawKey, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		switch len(rawKey) {
+		case ed25519.SeedSize:
+			return ed25519.NewKeyFromSeed(rawKey), nil
+		case ed25519.PrivateKeySize:
+			return ed25519.PrivateKey(rawKey), nil
+		}
+	}
+
+	return nil, errors.New("invalid dns.dnssec_private_key_pem")
+}
+
+func normalizeCompactPrivateKeyPEMForSettings(value string) string {
+	const begin = "-----BEGIN PRIVATE KEY-----"
+	const end = "-----END PRIVATE KEY-----"
+	if !strings.Contains(value, begin) || !strings.Contains(value, end) {
+		return value
+	}
+	bi := strings.Index(value, begin)
+	ei := strings.Index(value, end)
+	if bi < 0 || ei < 0 || ei <= bi {
+		return value
+	}
+	body := strings.TrimSpace(value[bi+len(begin) : ei])
+	body = strings.ReplaceAll(body, "\n", "")
+	body = strings.ReplaceAll(body, "\r", "")
+	body = strings.ReplaceAll(body, "\t", "")
+	body = strings.ReplaceAll(body, " ", "")
+	if body == "" {
+		return value
+	}
+	var b strings.Builder
+	b.WriteString(begin)
+	b.WriteString("\n")
+	for i := 0; i < len(body); i += 64 {
+		j := i + 64
+		if j > len(body) {
+			j = len(body)
+		}
+		b.WriteString(body[i:j])
+		b.WriteString("\n")
+	}
+	b.WriteString(end)
+	b.WriteString("\n")
+	return b.String()
 }

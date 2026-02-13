@@ -92,6 +92,7 @@
                                 <th class="px-6 py-3 font-medium">Server Port</th>
                                 <th class="px-6 py-3 font-medium">SSL</th>
                                 <th class="px-6 py-3 font-medium">SSL Redirect</th>
+                                <th class="px-6 py-3 font-medium">HSTS</th>
                                 <th class="px-6 py-3 font-medium">Proxy Pass Port</th>
                                 <th class="px-6 py-3 font-medium">Custom Errors</th>
                                 <th class="px-6 py-3 font-medium">Websockets</th>
@@ -118,6 +119,12 @@
                                     <select name="ssl_redirect[]" class="editable {{ $selectClass }}">
                                         <option value="0" {{ if eq $item.SSL_Redirect 0 }}selected{{ end }}>No</option>
                                         <option value="1" {{ if eq $item.SSL_Redirect 1 }}selected{{ end }}>Yes</option>
+                                    </select>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <select name="hsts[]" class="editable {{ $selectClass }}">
+                                        <option value="0" {{ if eq $item.HSTS 0 }}selected{{ end }}>Off</option>
+                                        <option value="1" {{ if eq $item.HSTS 1 }}selected{{ end }}>On</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" value="{{ $item.Proxy_Pass_Port }}" class="editable {{ $tableInputClass }}"></td>
@@ -154,6 +161,12 @@
                                 <td class="px-6 py-4">
                                     <select name="ssl_redirect[]" class="editable {{ $selectClass }}">
                                         <option value="0">No</option>
+                                    </select>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <select name="hsts[]" class="editable {{ $selectClass }}">
+                                        <option value="0">Off</option>
+                                        <option value="1">On</option>
                                     </select>
                                 </td>
                                 <td class="px-6 py-4"><input name="proxy_pass_port[]" type="number" placeholder="8080" class="editable {{ $tableInputClass }}"></td>
