@@ -172,6 +172,21 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 			))
 		}
 
+	case dns.TypeTLSA:
+		tlsaRecords := queryMultiRecords(qname, "TLSA")
+		if len(tlsaRecords) == 0 {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
+		for _, rec := range tlsaRecords {
+			addRR(msg, fmt.Sprintf(
+				"%s %d IN TLSA %s",
+				fqdn,
+				rec.TTL,
+				rec.Content,
+			))
+		}
+
 	case dns.TypeNS:
 		nsHosts := parseCSV(appSettings.GetValue("dns.ns_hosts"))
 		if len(nsHosts) == 0 {

@@ -1,23 +1,19 @@
 package handlers
 
 import (
-	"html/template"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
-	"net/url"
-	"io"
 	"time"
-	"fmt"
+
 	"GoResolver/internal/models"
 	"GoResolver/internal/services"
 	"github.com/gorilla/mux"
 )
-
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
-}
 
 func valueAt(values []string, idx int) string {
 	if idx >= 0 && idx < len(values) {
@@ -37,28 +33,12 @@ func maxLen(slices ...[]string) int {
 }
 
 type ServerConfigurationHandler struct {
-	Tmpl    *template.Template
 	Service *services.ServerConfigurationService
 }
 
 func NewServerConfigurationHandler() *ServerConfigurationHandler {
-	funcMap := mergeFuncMaps(baseFuncMap(), template.FuncMap{
-		"extractPort":  extractPort,
-		"extractLimit": extractLimit,
-		"contains":     contains,
-	})
-
-	tmpl := template.Must(template.New("layout.html").
-		Funcs(funcMap).
-		ParseFiles(
-			"web/templates/layout.html",
-			"web/templates/serverconfiguration.html",
-		),
-	)
-
 	return &ServerConfigurationHandler{
 		Service: services.NewServerConfigurationService(),
-		Tmpl:    tmpl,
 	}
 }
 
@@ -104,92 +84,6 @@ func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.R
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 	}
 }
-
-func (h *ServerConfigurationHandler) Index(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	
-	serverID := mux.Vars(r)["id"]
-	if serverID == "" {
-		http.Error(w, "No id supplied", http.StatusBadRequest)
-		return
-	}
-
-	conf := h.Service.GetServerConfiguration(serverID)
-	policy, _ := h.Service.GetDDoSPolicy(serverID)
-	fail2banPolicy, _ := h.Service.GetFail2BanPolicy(serverID)
-	fail2banBans := h.Service.ListFail2BanBans(serverID)
-	if len(conf) == 0 {
-		srv, err := h.Service.GetServerBasics(serverID)
-		if err != nil {
-			http.Error(w, "No server config found", http.StatusNotFound)
-			return
-		}
-
-		page := models.PageDataServerConfig{
-			Active:     "servers",
-			Data:       []models.ServerConfiguration{},
-			ServerID:   serverID,
-			ServerName: srv.Name,
-			IP:         srv.IP,
-			VPN_File:   srv.VPN_File,
-			ErrorPages: h.Service.GetServerErrorPages(serverID),
-			ErrorFiles: h.Service.GetServerErrorFiles(),
-			DDoSPolicy: policy,
-			Fail2BanPolicy: fail2banPolicy,
-			Fail2BanBans:   fail2banBans,
-		}
-
-		if srv.IP != "" {
-			rules, err := h.Service.ListIPTablesRules()
-			if err != nil {
-				log.Println("iptables error:", err)
-			} else {
-				page.IPTablesRules = FilterRulesForServer(rules, serverID, srv.IP)
-			}
-		}
-
-		if err := h.Tmpl.ExecuteTemplate(w, "layout", page); err != nil {
-			log.Println("template execute error:", err)
-			http.Error(w, "Template error", http.StatusInternalServerError)
-		}
-		return
-	}
-	
-	errorPages := h.Service.GetServerErrorPages(serverID)
-	errorFiles := h.Service.GetServerErrorFiles()
-
-	vpnText := string(conf[0].VPN_File)
-
-
-	page := models.PageDataServerConfig{
-		Active:     "servers",
-		Data:       conf,
-		ServerID:   serverID,
-		ServerName: conf[0].Name,
-		IP:         conf[0].IP,
-		VPN_File:   vpnText, 
-		ErrorPages: errorPages,
-		ErrorFiles: errorFiles,
-		DDoSPolicy: policy,
-		Fail2BanPolicy: fail2banPolicy,
-		Fail2BanBans:   fail2banBans,
-	}
-	rules, err := h.Service.ListIPTablesRules()
-	rulesForServer := FilterRulesForServer(rules, serverID, conf[0].IP)
-	if err != nil {
-		log.Println("iptables error:", err)
-	} else {
-		page.IPTablesRules = rulesForServer
-	}
-
-
-	if err := h.Tmpl.ExecuteTemplate(w, "layout", page); err != nil {
-		log.Println("template execute error:", err)
-		http.Error(w, "Template error", http.StatusInternalServerError)
-	}
-}
-
-
 
 func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
@@ -785,22 +679,6 @@ func (h *ServerConfigurationHandler) DeleteRule(w http.ResponseWriter, r *http.R
     redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
 }
 
-func extractPort(comment string) string {
-    parts := strings.Split(comment, ":")
-    if len(parts) == 3 {
-        return strings.TrimPrefix(parts[2], "CONNLIMIT_")
-    }
-    return ""
-}
-
-func isGoResolverRule(comment string) bool {
-    return strings.HasPrefix(comment, "GoResolver:")
-}
-
-func extractLimit(rule models.IPTablesRule) string {
-    return rule.Limit
-}
-
 func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *http.Request) {
     serverID := mux.Vars(r)["id"]
     if serverID == "" {
@@ -1011,3 +889,6 @@ func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab strin
 	//http.Redirect(w, r, redirectURL, http.StatusFound)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
+
+
+

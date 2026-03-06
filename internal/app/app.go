@@ -17,6 +17,7 @@ type App struct {
 
 func New() *App {
 	a := &App{}
+	services.StartStatusMonitor()
 	a.Router = NewRouter()
 	return a
 }

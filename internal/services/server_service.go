@@ -33,7 +33,7 @@ func (s *ServerService) GetServers() []models.Server {
 			log.Println("Row scan error:", err)
 			continue
 		}
-		srv.Status = checkStatus(srv.IP) 
+		srv.Status = DefaultStatusMonitor().GetPingStatus(srv.IP)
 		servers = append(servers, srv)
 	}
 
@@ -291,13 +291,4 @@ func removeIfExists(path string) bool {
 		return false
 	}
 	return true
-}
-
-func checkStatus(ip string) string {
-	serverStatus := "Offline"
-	err := exec.Command("ping", "-c", "1", "-W", "1", ip).Run()
-	if err == nil {
-		serverStatus = "Online"
-	}
-	return serverStatus
 }

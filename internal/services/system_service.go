@@ -1,10 +1,8 @@
 package services
 
 import (
-	"net"
-	"os/exec"
-	"time"
 	"GoResolver/internal/models"
+	"strings"
 )
 
 type SystemService struct {}
@@ -16,25 +14,20 @@ func NewSystemService() *SystemService {
 func (s *SystemService) GetDashboardData() []models.Dashboard {
 	data := []models.Dashboard{}
 	settings := NewSettingsService()
+	monitor := DefaultStatusMonitor()
 
-	dnsStatus := "Offline"
-	conn, err := net.DialTimeout("udp", settings.GetValue("system.dns_probe_addr"), 2*time.Second)
-	if err == nil {
-		dnsStatus = "Online"
-		conn.Close()
-	}
-	data = append(data, models.Dashboard{Name: "DNS", Status: dnsStatus})
+	data = append(data, models.Dashboard{
+		Name:   "DNS",
+		Status: monitor.GetDNSStatus(settings.GetValue("system.dns_probe_addr")),
+	})
 
-	healthName := settings.GetValue("vpn.healthcheck_name")
-	healthIP := settings.GetValue("vpn.healthcheck_ip")
+	healthName := strings.TrimSpace(settings.GetValue("vpn.healthcheck_name"))
+	healthIP := strings.TrimSpace(settings.GetValue("vpn.healthcheck_ip"))
 	if healthName != "" && healthIP != "" {
-		vpnStatus := "Offline"
-		err = exec.Command("ping", "-c", "1", "-W", "1", healthIP).Run()
-		if err == nil {
-			vpnStatus = "Online"
-		}
-
-		data = append(data, models.Dashboard{Name: healthName, Status: vpnStatus})
+		data = append(data, models.Dashboard{
+			Name:   healthName,
+			Status: monitor.GetPingStatus(healthIP),
+		})
 	}
 	return data
 }

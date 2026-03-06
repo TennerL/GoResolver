@@ -1,72 +1,54 @@
 package handlers
 
 import (
-	"html/template"
 	"net/http"
+	"net/url"
 
-	"GoResolver/internal/models"
 	"GoResolver/internal/services"
 	"GoResolver/internal/session"
-
 )
 
 type LoginHandler struct {
-	Tmpl    *template.Template
 	Service *services.LoginService
 }
 
 func NewLoginHandler() *LoginHandler {
 	return &LoginHandler{
-		Tmpl: parseTemplatesWithFuncMap(
-			baseFuncMap(),
-			"web/templates/layout.html",
-			"web/templates/login.html",
-		),
 		Service: services.NewLoginService(),
 	}
 }
 
 func (h *LoginHandler) Index(w http.ResponseWriter, r *http.Request) {
-	data := map[string]string{}
-
-	if r.Method == http.MethodPost {
-		username := r.FormValue("username")
-		password := r.FormValue("password")
-
-		auth := h.Service.Authenticate(username, password)
-		if !auth.Success {
-			data["Error"] = auth.Error
-			h.render(w, data)
-			return
-		}
-
-		sess, err := session.Store.Get(r, "session")
-		if err != nil {
-			http.Error(w, "Session error", 500)
-			return
-		}
-
-		sess.Values["authenticated"] = true
-		sess.Values["userid"] = auth.UserID
-		sess.Save(r, w)
-
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	h.render(w, data)
-}
+	username := r.FormValue("username")
+	password := r.FormValue("password")
 
-func (h *LoginHandler) render(w http.ResponseWriter, data map[string]string) {
-	h.Tmpl.ExecuteTemplate(w, "layout", models.PageData{
-		Active: "login",
-		Data:   data,
-	})
+	auth := h.Service.Authenticate(username, password)
+	if !auth.Success {
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(auth.Error), http.StatusSeeOther)
+		return
+	}
+
+	sess, err := session.Store.Get(r, "session")
+	if err != nil {
+		http.Error(w, "Session error", http.StatusInternalServerError)
+		return
+	}
+
+	sess.Values["authenticated"] = true
+	sess.Values["userid"] = auth.UserID
+	_ = sess.Save(r, w)
+
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (h *LoginHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	sess, _ := session.Store.Get(r, "session")
 	sess.Options.MaxAge = -1
-	sess.Save(r, w)
+	_ = sess.Save(r, w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }

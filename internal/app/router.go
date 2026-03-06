@@ -1,17 +1,18 @@
 package app
 
 import (
-	"net/http"
 	"io/fs"
-	"GoResolver/web"
+	"net/http"
+
 	"GoResolver/internal/handlers"
+	"GoResolver/web"
 	"github.com/gorilla/mux"
 )
 
 func NewRouter() http.Handler {
 	r := mux.NewRouter()
 
-
+	frontend := handlers.NewFrontendHandler()
 	dashboard := handlers.NewDashboardHandler()
 	domains := handlers.NewDomainsHandler()
 	records := handlers.NewRecordHandler()
@@ -21,48 +22,50 @@ func NewRouter() http.Handler {
 	analyticsHandler := handlers.NewAnalyticsHandler()
 	settingsHandler := handlers.NewSettingsHandler()
 
-	r.HandleFunc("/login", login.Index).Methods("GET", "POST")
+	r.HandleFunc("/login", frontend.Index).Methods("GET")
+	r.HandleFunc("/login", login.Index).Methods("POST")
 	r.HandleFunc("/logout", login.Logout).Methods("GET", "POST")
-	r.HandleFunc("/", RequireAuth(dashboard.Index)).Methods("GET")
-	// Domains
-	r.HandleFunc("/domains", RequireAuth(domains.Index)).Methods("GET")
+
+	r.HandleFunc("/", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/domains", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/domains/{id:[0-9]+}/records", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/servers", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/analytics", RequireAuth(frontend.Index)).Methods("GET")
+	r.HandleFunc("/settings", RequireAuth(frontend.Index)).Methods("GET")
+
+	r.HandleFunc("/api/pages/dashboard", RequireAuthAPI(dashboard.API)).Methods("GET")
+	r.HandleFunc("/api/pages/domains", RequireAuthAPI(domains.API)).Methods("GET")
+	r.HandleFunc("/api/pages/domains/{id:[0-9]+}/records", RequireAuthAPI(records.API)).Methods("GET")
+	r.HandleFunc("/api/pages/servers", RequireAuthAPI(servers.API)).Methods("GET")
+	r.HandleFunc("/api/pages/servers/{id:[0-9]+}/server_configuration", RequireAuthAPI(serverconfiguration.API)).Methods("GET")
+	r.HandleFunc("/api/pages/settings", RequireAuthAPI(settingsHandler.API)).Methods("GET")
+
 	r.HandleFunc("/domains/new", RequireAuth(domains.Create)).Methods("POST")
 	r.HandleFunc("/domains/{id:[0-9]+}/delete", RequireAuth(domains.Delete)).Methods("POST")
-	r.HandleFunc("/domains/{id:[0-9]+}/records", RequireAuth(records.Index)).Methods("GET")
 	r.HandleFunc("/domains/{id:[0-9]+}/records/new", RequireAuth(records.Create)).Methods("POST")
-	// Records
 	r.HandleFunc("/records/{id}/edit", RequireAuth(records.Edit)).Methods("POST")
 	r.HandleFunc("/records/{id}/delete", RequireAuth(records.Delete)).Methods("POST")
-	// Servers 
-	r.HandleFunc("/servers", RequireAuth(servers.Index)).Methods("GET")
+
 	r.HandleFunc("/servers/new", RequireAuth(servers.AddServer)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/delete", RequireAuth(servers.Delete)).Methods("POST")
-	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(serverconfiguration.Index)).Methods("GET")
-	r.HandleFunc(
-		"/servers/{id:[0-9]+}/server_configuration",
-		RequireAuth(serverconfiguration.HandlePost),
-	).Methods("POST")
+	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(serverconfiguration.HandlePost)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/error-pages/upload", RequireAuth(serverconfiguration.UploadErrorPage)).Methods("POST")
 	r.HandleFunc("/error-files/{id}", RequireAuth(serverconfiguration.GetErrorFile)).Methods("GET")
 	r.HandleFunc("/error-files/{id}", RequireAuth(serverconfiguration.UpdateErrorFile)).Methods("PUT")
 
-	// Analytics
-	r.HandleFunc("/analytics", RequireAuth(analyticsHandler.Index)).Methods("GET")
-	r.HandleFunc("/api/analytics", RequireAuth(analyticsHandler.API)).Methods("GET")
-	r.HandleFunc("/api/analytics/hosts", RequireAuth(analyticsHandler.Hosts)).Methods("GET")
-	r.HandleFunc("/api/analytics/ips", RequireAuth(analyticsHandler.IPs)).Methods("GET")
-	r.HandleFunc("/api/analytics/ip-geo", RequireAuth(analyticsHandler.IPGeo)).Methods("GET")
-	r.HandleFunc("/settings", RequireAuth(settingsHandler.Index)).Methods("GET", "POST")
+	r.HandleFunc("/api/analytics", RequireAuthAPI(analyticsHandler.API)).Methods("GET")
+	r.HandleFunc("/api/analytics/hosts", RequireAuthAPI(analyticsHandler.Hosts)).Methods("GET")
+	r.HandleFunc("/api/analytics/ips", RequireAuthAPI(analyticsHandler.IPs)).Methods("GET")
+	r.HandleFunc("/api/analytics/ip-geo", RequireAuthAPI(analyticsHandler.IPGeo)).Methods("GET")
+	r.HandleFunc("/settings", RequireAuth(settingsHandler.Index)).Methods("POST")
 
 	static, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
 		panic(err)
 	}
 
-	r.PathPrefix("/static/").
-		Handler(http.StripPrefix("/static/",
-			http.FileServer(http.FS(static)),
-		))
+	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 
 	return r
 }

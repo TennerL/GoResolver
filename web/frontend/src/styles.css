@@ -1,0 +1,108 @@
+:root {
+  color-scheme: dark;
+  --goresolver-shell: rgba(9, 13, 20, 0.82);
+  --goresolver-panel: rgba(16, 22, 34, 0.72);
+  --goresolver-border: rgba(255, 255, 255, 0.08);
+  --goresolver-glow: rgba(255, 109, 77, 0.2);
+  --goresolver-accent: #ff6d4d;
+  --goresolver-accent-alt: #52a8ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app-root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI Variable Display", "Trebuchet MS", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 109, 77, 0.16), transparent 26%),
+    radial-gradient(circle at top right, rgba(82, 168, 255, 0.12), transparent 30%),
+    linear-gradient(180deg, #111827 0%, #0c1118 48%, #070b10 100%);
+  color: #f8fafc;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at center, black, transparent 78%);
+  pointer-events: none;
+}
+
+#app-root {
+  position: relative;
+  z-index: 1;
+}
+
+.inline-form {
+  display: inline-flex;
+}
+
+.page-surface,
+.analytics-surface,
+.server-config-surface {
+  animation: fade-rise 220ms ease-out;
+}
+
+.hero-panel {
+  background: linear-gradient(135deg, rgba(255, 109, 77, 0.2), rgba(82, 168, 255, 0.16));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.22);
+}
+
+.shell-panel {
+  background: var(--goresolver-shell);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--goresolver-border);
+}
+
+.soft-panel {
+  background: var(--goresolver-panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--goresolver-border);
+}
+
+.status-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 6px rgba(255, 255, 255, 0.03);
+}
+
+.chart-surface {
+  min-height: 320px;
+}
+
+.map-surface {
+  min-height: 380px;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.code-chip {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.82rem;
+}
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

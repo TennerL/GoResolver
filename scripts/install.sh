@@ -39,6 +39,7 @@ install_dependencies() {
       ${SUDO} apt-get install -y \
         ca-certificates curl git \
         golang-go \
+        fluent-bit \
         mysql-server mysql-client \
         nginx iptables fail2ban \
         openvpn easy-rsa
@@ -278,6 +279,20 @@ install_dependencies
 echo "Ensuring services are enabled..."
 ${SUDO} systemctl enable --now mysql 2>/dev/null || ${SUDO} systemctl enable --now mysqld 2>/dev/null || true
 ${SUDO} systemctl enable --now nginx 2>/dev/null || true
+
+echo "Installing Fluent Bit configuration..."
+FLUENT_BIT_SRC="${ROOT_DIR}/scripts/fluent-bit.conf"
+FLUENT_BIT_DST="/etc/fluent-bit/fluent-bit.conf"
+if [[ -f "${FLUENT_BIT_SRC}" ]]; then
+  ${SUDO} mkdir -p "$(dirname "${FLUENT_BIT_DST}")"
+  ${SUDO} cp "${FLUENT_BIT_SRC}" "${FLUENT_BIT_DST}"
+  ${SUDO} chmod 644 "${FLUENT_BIT_DST}"
+else
+  echo "Warning: Fluent Bit config not found at ${FLUENT_BIT_SRC}; skipping copy."
+fi
+
+echo "Ensuring Fluent Bit service is enabled..."
+${SUDO} systemctl enable --now fluent-bit 2>/dev/null || ${SUDO} systemctl enable --now td-agent-bit 2>/dev/null || true
 
 if [[ -d "/etc/openvpn/server" ]]; then
   OPENVPN_SERVER_CONF="/etc/openvpn/server/server.conf"
