@@ -15,20 +15,146 @@ import (
 
 type AnalyticsService struct{}
 
+type AnalyticsFilters struct {
+	RangeMinutes int
+	Host         string
+	Method       string
+	Status       int
+	StatusClass  string
+	URIContains  string
+	IPContains   string
+	Verdict      string
+	From         time.Time
+	To           time.Time
+	CacheOnly    bool
+}
+
+type AnalyticsSummary struct {
+	TotalRequests    int64   `json:"total_requests"`
+	UniqueIPs        int64   `json:"unique_ips"`
+	ErrorRequests    int64   `json:"error_requests"`
+	ErrorRate        float64 `json:"error_rate"`
+	AvgRequestTimeMs float64 `json:"avg_request_time_ms"`
+	TransferredBytes int64   `json:"transferred_bytes"`
+}
+
 func NewAnalyticsService() *AnalyticsService {
 	return &AnalyticsService{}
 }
 
-func (s *AnalyticsService) RequestsOverTime(minutes int, host string) ([]string, []int, error) {
-	rows, err := db.DB.Query(`
-		SELECT DATE_FORMAT(time, '%H:%i') AS label, COUNT(*)
+func normalizeAnalyticsFilters(filters AnalyticsFilters) AnalyticsFilters {
+	filters.Host = strings.TrimSpace(filters.Host)
+	filters.Method = strings.ToUpper(strings.TrimSpace(filters.Method))
+	filters.StatusClass = normalizeStatusClass(filters.StatusClass)
+	filters.URIContains = strings.TrimSpace(filters.URIContains)
+	filters.IPContains = strings.TrimSpace(filters.IPContains)
+	filters.Verdict = strings.ToLower(strings.TrimSpace(filters.Verdict))
+
+	if filters.RangeMinutes <= 0 {
+		filters.RangeMinutes = 60
+	}
+
+	now := time.Now().UTC()
+	from := filters.From
+	to := filters.To
+	switch {
+	case from.IsZero() && to.IsZero():
+		to = now
+		from = to.Add(-time.Duration(filters.RangeMinutes) * time.Minute)
+	case from.IsZero():
+		to = to.UTC()
+		from = to.Add(-time.Duration(filters.RangeMinutes) * time.Minute)
+	case to.IsZero():
+		from = from.UTC()
+		to = now
+	default:
+		from = from.UTC()
+		to = to.UTC()
+	}
+	if to.Before(from) {
+		from, to = to, from
+	}
+	filters.From = from
+	filters.To = to
+	return filters
+}
+
+func normalizeStatusClass(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1xx", "2xx", "3xx", "4xx", "5xx":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
+}
+
+func analyticsTimeLabelFormat(filters AnalyticsFilters) string {
+	span := filters.To.Sub(filters.From)
+	switch {
+	case span > 7*24*time.Hour:
+		return "%Y-%m-%d"
+	case span > 24*time.Hour:
+		return "%Y-%m-%d %H:00"
+	default:
+		return "%Y-%m-%d %H:%i"
+	}
+}
+
+func analyticsWhereClause(filters AnalyticsFilters) (string, []any) {
+	filters = normalizeAnalyticsFilters(filters)
+
+	conditions := []string{
+		"`time` >= ?",
+		"`time` <= ?",
+	}
+	args := []any{filters.From, filters.To}
+
+	if filters.Host != "" {
+		conditions = append(conditions, "host = ?")
+		args = append(args, filters.Host)
+	}
+	if filters.Method != "" {
+		conditions = append(conditions, "method = ?")
+		args = append(args, filters.Method)
+	}
+	if filters.Status > 0 {
+		conditions = append(conditions, "status = ?")
+		args = append(args, filters.Status)
+	}
+	if filters.StatusClass != "" {
+		base := int(filters.StatusClass[0]-'0') * 100
+		conditions = append(conditions, "status BETWEEN ? AND ?")
+		args = append(args, base, base+99)
+	}
+	if filters.URIContains != "" {
+		conditions = append(conditions, "uri LIKE ?")
+		args = append(args, "%"+filters.URIContains+"%")
+	}
+	if filters.IPContains != "" {
+		like := "%" + filters.IPContains + "%"
+		conditions = append(conditions, "(remote_addr LIKE ? OR x_forwarded_for LIKE ?)")
+		args = append(args, like, like)
+	}
+
+	return "WHERE " + strings.Join(conditions, " AND "), args
+}
+
+func analyticsClientIPExpr() string {
+	return "CASE WHEN TRIM(COALESCE(SUBSTRING_INDEX(x_forwarded_for, ',', 1), '')) <> '' THEN TRIM(SUBSTRING_INDEX(x_forwarded_for, ',', 1)) ELSE TRIM(remote_addr) END"
+}
+
+func (s *AnalyticsService) RequestsOverTime(filters AnalyticsFilters) ([]string, []int, error) {
+	filters = normalizeAnalyticsFilters(filters)
+	labelFormat := analyticsTimeLabelFormat(filters)
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT DATE_FORMAT(time, '%s') AS label, COUNT(*)
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
+		%s
 		GROUP BY label
-		ORDER BY label`,
-		minutes, host, host,
-	)
+		ORDER BY MIN(time)`, labelFormat, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -52,15 +178,15 @@ func (s *AnalyticsService) RequestsOverTime(minutes int, host string) ([]string,
 	return labels, values, nil
 }
 
-func (s *AnalyticsService) StatusCodes(minutes int, host string) (map[int]int, error) {
-	rows, err := db.DB.Query(`
+func (s *AnalyticsService) StatusCodes(filters AnalyticsFilters) (map[int]int, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
 		SELECT status, COUNT(*)
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
-		GROUP BY status`,
-		minutes, host, host,
-	)
+		%s
+		GROUP BY status`, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,18 +206,86 @@ func (s *AnalyticsService) StatusCodes(minutes int, host string) (map[int]int, e
 	return result, nil
 }
 
-func (s *AnalyticsService) TopURIs(minutes int, host string) ([]string, map[string][]int, error) {
-	query := `
+func (s *AnalyticsService) Methods(filters AnalyticsFilters) (map[string]int, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT method, COUNT(*)
+		FROM nginx_logs
+		%s
+		GROUP BY method
+		ORDER BY COUNT(*) DESC, method ASC`, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var method string
+		var count int
+		if err := rows.Scan(&method, &count); err != nil {
+			return nil, err
+		}
+		method = strings.TrimSpace(method)
+		if method == "" {
+			method = "UNKNOWN"
+		}
+		result[method] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *AnalyticsService) Summary(filters AnalyticsFilters) (AnalyticsSummary, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT
+			COUNT(*) AS total_requests,
+			COUNT(DISTINCT %s) AS unique_ips,
+			SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS error_requests,
+			AVG(request_time) AS avg_request_time,
+			COALESCE(SUM(bytes), 0) AS transferred_bytes
+		FROM nginx_logs
+		%s`, analyticsClientIPExpr(), whereClause)
+
+	var summary AnalyticsSummary
+	var avgRequestTime sqlNullFloat64
+	if err := db.DB.QueryRow(query, args...).Scan(
+		&summary.TotalRequests,
+		&summary.UniqueIPs,
+		&summary.ErrorRequests,
+		&avgRequestTime,
+		&summary.TransferredBytes,
+	); err != nil {
+		return summary, err
+	}
+
+	if summary.TotalRequests > 0 {
+		summary.ErrorRate = (float64(summary.ErrorRequests) / float64(summary.TotalRequests)) * 100
+	}
+	if avgRequestTime.Valid {
+		summary.AvgRequestTimeMs = avgRequestTime.Float64 * 1000
+	}
+
+	return summary, nil
+}
+
+func (s *AnalyticsService) TopURIs(filters AnalyticsFilters) ([]string, map[string][]int, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
 		SELECT uri, status, COUNT(*) as hits
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
+		%s
 		GROUP BY uri, status
 		ORDER BY hits DESC
 		LIMIT 20
-	`
+	`, whereClause)
 
-	rows, err := db.DB.Query(query, minutes, host, host)
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -151,17 +345,19 @@ func (s *AnalyticsService) TopURIs(minutes int, host string) ([]string, map[stri
 	return labels, values, nil
 }
 
-func (s *AnalyticsService) AvgRequestTime(minutes int, host string) ([]string, []float64, error) {
-	rows, err := db.DB.Query(`
-		SELECT DATE_FORMAT(time, '%H:%i') AS label, AVG(request_time)
+func (s *AnalyticsService) AvgRequestTime(filters AnalyticsFilters) ([]string, []float64, error) {
+	filters = normalizeAnalyticsFilters(filters)
+	labelFormat := analyticsTimeLabelFormat(filters)
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT DATE_FORMAT(time, '%s') AS label, AVG(request_time)
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
+		%s
 		  AND request_time IS NOT NULL
-		  AND (? = '' OR host = ?)
 		GROUP BY label
-		ORDER BY label`,
-		minutes, host, host,
-	)
+		ORDER BY MIN(time)`, labelFormat, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -256,13 +452,15 @@ func (s *AnalyticsService) EnsureIPGeoTable() error {
 	return err
 }
 
-func (s *AnalyticsService) UniqueIPs(minutes int, host string) ([]string, error) {
-	rows, err := db.DB.Query(`
+func (s *AnalyticsService) UniqueIPs(filters AnalyticsFilters) ([]string, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
 		SELECT remote_addr, x_forwarded_for
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
-	`, minutes, host, host)
+		%s
+	`, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -295,17 +493,19 @@ func (s *AnalyticsService) UniqueIPs(minutes int, host string) ([]string, error)
 	return ips, nil
 }
 
-func (s *AnalyticsService) IPReputationList(minutes int, host, filter string) ([]IPReputation, error) {
+func (s *AnalyticsService) IPReputationList(filters AnalyticsFilters) ([]IPReputation, error) {
 	if err := s.EnsureIPReputationTable(); err != nil {
 		return nil, err
 	}
 
-	ipHosts, err := s.IPHosts(minutes, host)
+	filters = normalizeAnalyticsFilters(filters)
+
+	ipHosts, err := s.IPHosts(filters)
 	if err != nil {
 		return nil, err
 	}
 
-	ips, err := s.UniqueIPs(minutes, host)
+	ips, err := s.UniqueIPs(filters)
 	if err != nil {
 		return nil, err
 	}
@@ -318,18 +518,21 @@ func (s *AnalyticsService) IPReputationList(minutes int, host, filter string) ([
 
 	reputations := make([]IPReputation, 0, len(ips))
 	for _, ip := range ips {
-		score, reports, checkedAt, verdict, err := s.getIPReputation(ip, key, maxAgeDays, threshold)
+		score, reports, checkedAt, verdict, err := s.getIPReputation(ip, key, maxAgeDays, threshold, filters.CacheOnly)
 		if err != nil {
 			verdict = "unknown"
 		}
 		isp := ""
 		if _, _, _, _, _, cachedISP, ok := s.getCachedIPGeo(ip); ok {
 			isp = cachedISP
-		} else if lat, lon, city, region, country, fetchedISP, geoErr := fetchIPWhoIsGeo(ip); geoErr == nil {
-			_ = s.saveIPGeo(ip, lat, lon, city, region, country, fetchedISP)
-			isp = fetchedISP
+		} else if !filters.CacheOnly {
+			lat, lon, city, region, country, fetchedISP, geoErr := fetchIPWhoIsGeo(ip)
+			if geoErr == nil {
+				_ = s.saveIPGeo(ip, lat, lon, city, region, country, fetchedISP)
+				isp = fetchedISP
+			}
 		}
-		if filter != "" && verdict != filter {
+		if filters.Verdict != "" && verdict != filters.Verdict {
 			continue
 		}
 		reputations = append(reputations, IPReputation{
@@ -342,15 +545,31 @@ func (s *AnalyticsService) IPReputationList(minutes int, host, filter string) ([
 			Verdict:   verdict,
 		})
 	}
+	sort.SliceStable(reputations, func(i, j int) bool {
+		left := reputations[i]
+		right := reputations[j]
+		if verdictRank(left.Verdict) != verdictRank(right.Verdict) {
+			return verdictRank(left.Verdict) < verdictRank(right.Verdict)
+		}
+		if left.Score != right.Score {
+			return left.Score > right.Score
+		}
+		if left.Reports != right.Reports {
+			return left.Reports > right.Reports
+		}
+		return left.IP < right.IP
+	})
 	return reputations, nil
 }
 
-func (s *AnalyticsService) IPGeoPoints(minutes int, host string) ([]IPGeoPoint, error) {
+func (s *AnalyticsService) IPGeoPoints(filters AnalyticsFilters) ([]IPGeoPoint, error) {
 	if err := s.EnsureIPGeoTable(); err != nil {
 		return nil, err
 	}
 
-	ips, err := s.UniqueIPs(minutes, host)
+	filters = normalizeAnalyticsFilters(filters)
+
+	ips, err := s.UniqueIPs(filters)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +578,9 @@ func (s *AnalyticsService) IPGeoPoints(minutes int, host string) ([]IPGeoPoint, 
 	for _, ip := range ips {
 		lat, lon, city, region, country, isp, ok := s.getCachedIPGeo(ip)
 		if !ok {
+			if filters.CacheOnly {
+				continue
+			}
 			lat, lon, city, region, country, isp, err = fetchIPWhoIsGeo(ip)
 			if err != nil {
 				continue
@@ -381,10 +603,13 @@ func (s *AnalyticsService) IPGeoPoints(minutes int, host string) ([]IPGeoPoint, 
 	return points, nil
 }
 
-func (s *AnalyticsService) getIPReputation(ip, apiKey string, maxAgeDays, threshold int) (int, int, string, string, error) {
+func (s *AnalyticsService) getIPReputation(ip, apiKey string, maxAgeDays, threshold int, cacheOnly bool) (int, int, string, string, error) {
 	cachedScore, cachedReports, cachedAt, ok := s.getCachedIPReputation(ip)
 	if ok {
 		return cachedScore, cachedReports, cachedAt, verdictFromScore(cachedScore, threshold), nil
+	}
+	if cacheOnly {
+		return 0, 0, "", "unknown", fmt.Errorf("cache-only reputation lookup")
 	}
 
 	if apiKey == "" {
@@ -560,6 +785,19 @@ func verdictFromScore(score, threshold int) string {
 	return "genuine"
 }
 
+func verdictRank(verdict string) int {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case "suspicious":
+		return 0
+	case "unknown":
+		return 1
+	case "genuine":
+		return 2
+	default:
+		return 3
+	}
+}
+
 func parseIntSetting(raw string, fallback int) int {
 	if raw == "" {
 		return fallback
@@ -586,13 +824,15 @@ func isValidIP(ip string) bool {
 	return parsed != nil
 }
 
-func (s *AnalyticsService) IPHosts(minutes int, host string) (map[string][]string, error) {
-	rows, err := db.DB.Query(`
+func (s *AnalyticsService) IPHosts(filters AnalyticsFilters) (map[string][]string, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
 		SELECT remote_addr, x_forwarded_for, host
 		FROM nginx_logs
-		WHERE time >= NOW() - INTERVAL ? MINUTE
-		  AND (? = '' OR host = ?)
-	`, minutes, host, host)
+		%s
+	`, whereClause)
+
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -633,4 +873,41 @@ func (s *AnalyticsService) IPHosts(minutes int, host string) (map[string][]strin
 		out[ip] = list
 	}
 	return out, nil
+}
+
+type sqlNullFloat64 struct {
+	Float64 float64
+	Valid   bool
+}
+
+func (n *sqlNullFloat64) Scan(value any) error {
+	if value == nil {
+		n.Float64 = 0
+		n.Valid = false
+		return nil
+	}
+	switch v := value.(type) {
+	case float64:
+		n.Float64 = v
+	case float32:
+		n.Float64 = float64(v)
+	case int64:
+		n.Float64 = float64(v)
+	case []byte:
+		parsed, err := strconv.ParseFloat(string(v), 64)
+		if err != nil {
+			return err
+		}
+		n.Float64 = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return err
+		}
+		n.Float64 = parsed
+	default:
+		return fmt.Errorf("unsupported float scan type %T", value)
+	}
+	n.Valid = true
+	return nil
 }
