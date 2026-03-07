@@ -1,45 +1,43 @@
 package services
 
 import (
-	"database/sql"
+	"GoResolver/internal/config"
 	"GoResolver/internal/db"
 	"GoResolver/internal/models"
 	"crypto"
-	"crypto/rsa"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
 	"fmt"
-	"io"
-	"log"
-	"os"
-	"os/exec"
-	"regexp"
-	"path/filepath"
-	"time"
-	"strconv"
-	"strings"
-	"sort"
-	"math/big"
-	"net"
-	"sync"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
+	"github.com/go-acme/lego/v4/challenge/http01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
-	"github.com/go-acme/lego/v4/challenge/http01"
+	_ "github.com/go-sql-driver/mysql"
+	"io"
+	"log"
+	"math/big"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 type ServerConfigurationService struct{}
 
 var ensureServerConfigurationSchemaOnce sync.Once
-
-// 32-byte AES-256 key
-var aesKey = []byte("12345678901234567890123456789012") // Replace with secure key in production
 
 func NewServerConfigurationService() *ServerConfigurationService {
 	return &ServerConfigurationService{}
@@ -69,22 +67,23 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 	}
 
 	rows, err := db.DB.Query(`
-		SELECT
-			sc.id,
-			sc.server_name,
-			sc.server_port,
+			SELECT
+				sc.id,
+				sc.server_name,
+				sc.server_port,
 			sc.ssl_enabled,
 			sc.ssl_redirect,
 			sc.hsts,
 			sc.proxy_pass_port,
 			sc.proxy_intercept_errors,
 			sc.proxy_connect_timeout,
-			sc.proxy_read_timeout,
-			sc.proxy_send_timeout,
-			sc.websockets,
-			s.ip,
-			s.vpn_file,
-			s.port,
+				sc.proxy_read_timeout,
+				sc.proxy_send_timeout,
+				sc.websockets,
+				sc.letsencrypt_config_file,
+				s.ip,
+				s.vpn_file,
+				s.port,
 			s.name,
 			IFNULL(c.cert_path, ''),
 			IFNULL(c.key_path, ''),
@@ -105,49 +104,49 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 	var serverConfigurations []models.ServerConfiguration
 
 	for rows.Next() {
-	var sc models.ServerConfiguration
-	//var vpnBlob sql.NullBytes
-	var vpnBlob []byte
+		var sc models.ServerConfiguration
+		//var vpnBlob sql.NullBytes
+		var vpnBlob []byte
 
-	if err := rows.Scan(
-		&sc.ID,
-		&sc.Server_Name,
-		&sc.Server_Port,
-		&sc.SSL_Enabled,
-		&sc.SSL_Redirect,
-		&sc.HSTS,
-		&sc.Proxy_Pass_Port,
-		&sc.Proxy_Intercept_Errors,
-		&sc.Proxy_Connect_Timeout,
-		&sc.Proxy_Read_Timeout,
-		&sc.Proxy_Send_Timeout,
-		&sc.Websockets,
-		&sc.IP,
-		&vpnBlob,
-		&sc.Port,
-		&sc.Name,
-		&sc.Cert_Path,
-		&sc.Key_Path,
-		&sc.Cert_Issued,
-		&sc.Cert_Expiration,
-	); err != nil {
-		log.Println("Row scan error:", err)
-		continue
-	}
-
-	if len(vpnBlob) > 0 {
-		decrypted, err := DecryptVPN(vpnBlob)
-		if err != nil {
-			sc.VPN_File = nil
-		} else {
-			sc.VPN_File = decrypted
+		if err := rows.Scan(
+			&sc.ID,
+			&sc.Server_Name,
+			&sc.Server_Port,
+			&sc.SSL_Enabled,
+			&sc.SSL_Redirect,
+			&sc.HSTS,
+			&sc.Proxy_Pass_Port,
+			&sc.Proxy_Intercept_Errors,
+			&sc.Proxy_Connect_Timeout,
+			&sc.Proxy_Read_Timeout,
+			&sc.Proxy_Send_Timeout,
+			&sc.Websockets,
+			&sc.LetsEncryptConfigFile,
+			&sc.IP,
+			&vpnBlob,
+			&sc.Port,
+			&sc.Name,
+			&sc.Cert_Path,
+			&sc.Key_Path,
+			&sc.Cert_Issued,
+			&sc.Cert_Expiration,
+		); err != nil {
+			log.Println("Row scan error:", err)
+			continue
 		}
-	} else {
-		sc.VPN_File = nil
-	}
 
+		if len(vpnBlob) > 0 {
+			decrypted, err := DecryptVPN(vpnBlob)
+			if err != nil {
+				sc.VPN_File = nil
+			} else {
+				sc.VPN_File = decrypted
+			}
+		} else {
+			sc.VPN_File = nil
+		}
 
-	serverConfigurations = append(serverConfigurations, sc)
+		serverConfigurations = append(serverConfigurations, sc)
 	}
 	return serverConfigurations
 }
@@ -329,16 +328,16 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 		for _, port := range ports {
 			for _, entry := range whitelist {
 				if err := s.AddRule(models.IPTablesRuleSpec{
-					Table:     "filter",
-					Chain:     "INPUT",
-					Action:    "insert",
-					Position:  insertAt,
-					Protocol:  "tcp",
-					SourceIP:  entry,
-					DestIP:    destIP,
-					DestPort:  port,
-					Target:    "ACCEPT",
-					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
+					Table:    "filter",
+					Chain:    "INPUT",
+					Action:   "insert",
+					Position: insertAt,
+					Protocol: "tcp",
+					SourceIP: entry,
+					DestIP:   destIP,
+					DestPort: port,
+					Target:   "ACCEPT",
+					Comment:  fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
 				}); err != nil {
 					return err
 				}
@@ -351,15 +350,15 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 		if p.ConnLimit > 0 {
 			cl := p.ConnLimit
 			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:    "filter",
-				Chain:    "INPUT",
-				Action:   "append",
-				Protocol: "tcp",
-				DestIP:   destIP,
-				DestPort: port,
+				Table:     "filter",
+				Chain:     "INPUT",
+				Action:    "append",
+				Protocol:  "tcp",
+				DestIP:    destIP,
+				DestPort:  port,
 				ConnLimit: &cl,
-				Target:   "DROP",
-				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:CL%d", serverID, port),
+				Target:    "DROP",
+				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:CL%d", serverID, port),
 			}); err != nil {
 				return err
 			}
@@ -374,15 +373,15 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				"--hashlimit-name", fmt.Sprintf("gr_%s_rl_%d", serverID, port),
 			}
 			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:    "filter",
-				Chain:    "INPUT",
-				Action:   "append",
-				Protocol: "tcp",
-				DestIP:   destIP,
-				DestPort: port,
+				Table:     "filter",
+				Chain:     "INPUT",
+				Action:    "append",
+				Protocol:  "tcp",
+				DestIP:    destIP,
+				DestPort:  port,
 				ExtraArgs: args,
-				Target:   "DROP",
-				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:RL%d", serverID, port),
+				Target:    "DROP",
+				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:RL%d", serverID, port),
 			}); err != nil {
 				return err
 			}
@@ -397,16 +396,16 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 				"--hashlimit-name", fmt.Sprintf("gr_%s_syn_%d", serverID, port),
 			}
 			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:    "filter",
-				Chain:    "INPUT",
-				Action:   "append",
-				Protocol: "tcp",
-				SynOnly:  true,
-				DestIP:   destIP,
-				DestPort: port,
+				Table:     "filter",
+				Chain:     "INPUT",
+				Action:    "append",
+				Protocol:  "tcp",
+				SynOnly:   true,
+				DestIP:    destIP,
+				DestPort:  port,
 				ExtraArgs: args,
-				Target:   "DROP",
-				Comment:  fmt.Sprintf("GoResolver:DDoS:%s:SYN%d", serverID, port),
+				Target:    "DROP",
+				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:SYN%d", serverID, port),
 			}); err != nil {
 				return err
 			}
@@ -632,7 +631,7 @@ func (s *ServerConfigurationService) GetServerErrorPages(serverID string) []mode
 }
 
 func (s *ServerConfigurationService) GetServerErrorFiles() []models.ServerErrorFiles {
-		rows, err := db.DB.Query(`
+	rows, err := db.DB.Query(`
 		SELECT  id,
 				error_code,
 				response_type,
@@ -641,7 +640,7 @@ func (s *ServerConfigurationService) GetServerErrorFiles() []models.ServerErrorF
 				path
 		FROM error_page_files 
 		ORDER BY updated_at
-	`,)
+	`)
 	if err != nil {
 		log.Println("SELECT error_page_files failed:", err)
 		return nil
@@ -759,21 +758,26 @@ func (s *ServerConfigurationService) InsertErrorPage(ep models.ServerErrorPages)
 		ep.Enabled,
 	)
 	if err != nil {
-		log.Println("INSERT error_page failed:",err)
+		log.Println("INSERT error_page failed:", err)
 		return err
 	}
-	return nil 
+	return nil
 }
 
 func (s *ServerConfigurationService) UploadErrorPage(ef models.ServerErrorFiles) error {
-	_, err := db.DB.Exec(`
+	normalizedCodes, err := normalizeNginxErrorCodes(ef.Error_Code)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.DB.Exec(`
 		INSERT INTO error_page_files (
 			id, 
 			error_code, response_type,
 			filename, file 
 		) VALUES (UUID(), ?, ?, ?, ?)
 	`,
-		ef.Error_Code,
+		normalizedCodes,
 		ef.ResponseType,
 		ef.Filename,
 		ef.File,
@@ -784,7 +788,7 @@ func (s *ServerConfigurationService) UploadErrorPage(ef models.ServerErrorFiles)
 	}
 
 	if ef.Path == "" {
-		return nil 
+		return nil
 	}
 
 	path := filepath.Join(ef.Path, ef.Filename)
@@ -802,19 +806,24 @@ func (s *ServerConfigurationService) UploadErrorPage(ef models.ServerErrorFiles)
 	return nil
 }
 func (s *ServerConfigurationService) UpdateErrorFiles(ef models.ServerErrorFiles) error {
-	_, err := db.DB.Exec(`
+	normalizedCodes, err := normalizeNginxErrorCodes(ef.Error_Code)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.DB.Exec(`
 		UPDATE error_page_files 
 		SET error_code = ?, response_type = ? 
 		WHERE id = ?
 	`,
-	ef.Error_Code,
-	ef.ResponseType,
-	ef.ID,
+		normalizedCodes,
+		ef.ResponseType,
+		ef.ID,
 	)
 	if err != nil {
 		log.Println("Update error_page_files failed:", err)
 	}
-	return err 
+	return err
 }
 
 func (s *ServerConfigurationService) DeleteErrorPage(id string) error {
@@ -836,9 +845,8 @@ func (s *ServerConfigurationService) DeleteErrorFile(ef models.ServerErrorFiles)
 	if err != nil {
 		log.Println("DELETE FROM error_page_files failed:", err)
 	}
-	
 
-	efPath  := filepath.Join(ef.Path, ef.Filename)
+	efPath := filepath.Join(ef.Path, ef.Filename)
 
 	if err := os.Remove(efPath); err != nil {
 		log.Fatal(err)
@@ -901,254 +909,8 @@ func (s *ServerConfigurationService) UpdateErrorFile(id string, content []byte) 
 	return nil
 }
 
-
 func GenerateNginxConfig(SiteName string) (string, error) {
-	var config string
-
-	if err := ensureServerConfigurationSchema(); err != nil {
-		return "", err
-	}
-
-	// Generated config can be large (challenge page HTML + multiple maps/locations).
-	// Prevent GROUP_CONCAT truncation that would produce broken nginx files.
-	if _, err := db.DB.Exec(`SET SESSION group_concat_max_len = 1024 * 1024`); err != nil {
-		return "", fmt.Errorf("set group_concat_max_len failed: %w", err)
-	}
-
-	if err := NewServerConfigurationService().EnsureDDoSTables(); err != nil {
-		return "", err
-	}
-
-	err := db.DB.QueryRow(`
-		SELECT 
-		GROUP_CONCAT(site_config SEPARATOR '\n\n') AS nginx_config
-		FROM (
-		SELECT 
-			CONCAT(
-			-- Websockets map if enabled
-			IF(sc.websockets = 1, 
-				'map $http_upgrade $connection_upgrade {\n default upgrade;\n ''''      "";\n}\n\n', 
-				''
-			),
-			CONCAT(
-				'map $http_x_forwarded_proto $gr_forwarded_proto_', sc.id, ' {\n',
-				' default $scheme;\n',
-				' ~*https https;\n',
-				' ~*http http;\n',
-				'}\n\n'
-			),
-			CONCAT(
-				'map $gr_forwarded_proto_', sc.id, ' $gr_forwarded_port_', sc.id, ' {\n',
-				' default $server_port;\n',
-				' https 443;\n',
-				' http 80;\n',
-				'}\n\n'
-			),
-			CONCAT(
-				'map $gr_forwarded_proto_', sc.id, ' $gr_forwarded_ssl_', sc.id, ' {\n',
-				' default off;\n',
-				' https on;\n',
-				'}\n\n'
-			),
-
-			-- DDoS zones and challenge map
-			IF(IFNULL(dp.enabled, 0) = 1
-				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT(
-					'geo $gr_ddos_whitelist_', sc.id, ' {\n',
-					'  default 0;\n',
-					IF(
-						TRIM(BOTH ',' FROM REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(dp.whitelist, ''), '\r', ''), '\n', ','), ';', ','), ' ', ''), ',,', ','), ',,', ',')) <> '',
-						CONCAT(
-							'  ',
-							REPLACE(
-								TRIM(BOTH ',' FROM REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(dp.whitelist, ''), '\r', ''), '\n', ','), ';', ','), ' ', ''), ',,', ','), ',,', ',')),
-								',',
-								' 1;\n  '
-							),
-							' 1;\n'
-						),
-						''
-					),
-					'}\n\n'
-				),
-				''
-			),
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0
-				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT(
-					'map $gr_ddos_whitelist_', sc.id, ' $gr_ddos_req_key_', sc.id, ' {\n',
-					'  default $binary_remote_addr$host;\n',
-					'  1 \"\";\n',
-					'}\n\n',
-					'limit_req_zone $gr_ddos_req_key_', sc.id, ' zone=gr_', sc.id, '_req:10m rate=', dp.rate_limit, 'r/s;\n'
-				),
-				''
-			),
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.conn_limit, 0) > 0
-				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT(
-					'map $gr_ddos_whitelist_', sc.id, ' $gr_ddos_conn_key_', sc.id, ' {\n',
-					'  default $binary_remote_addr$host;\n',
-					'  1 \"\";\n',
-					'}\n\n',
-					'limit_conn_zone $gr_ddos_conn_key_', sc.id, ' zone=gr_', sc.id, '_conn:10m;\n'
-				),
-				''
-			),
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge'
-				AND sc.id = (SELECT MIN(id) FROM server_configuration WHERE server_name = sc.server_name),
-				CONCAT(
-					'map $cookie_gr_challenge_', sc.id, ' $gr_challenge_valid_', sc.id, ' {\n',
-					' default 0;\n',
-					' \"1\" 1;\n',
-					'}\n\n',
-					'map \"$gr_ddos_whitelist_', sc.id, ':$gr_challenge_valid_', sc.id, '\" $gr_ddos_allow_', sc.id, ' {\n',
-					' default 0;\n',
-					' \"1:0\" 1;\n',
-					' \"1:1\" 1;\n',
-					' \"0:1\" 1;\n',
-					'}\n\n'
-				),
-				''
-			),
-
-			-- Main server block
-			'server {\n',
-			IF(sc.ssl_enabled = 0, CONCAT(' listen ', sc.server_port, ';\n'), ''),
-			IF(sc.ssl_enabled = 1, CONCAT(
-				' listen ', sc.server_port, ' ssl http2;\n',
-				' listen [::]:', sc.server_port, ' ssl http2;\n'
-			), ''),
-			' server_name ', IFNULL(sc.server_name, ''), ';\n\n',
-			' set $gr_ray_id \"GR-$request_id\";\n',
-			' add_header X-Ray-ID $gr_ray_id always;\n',
-			' add_header Content-Security-Policy \"upgrade-insecure-requests\" always;\n',
-			IF(sc.ssl_enabled = 1 AND IFNULL(sc.hsts, 0) = 1, ' add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;\n', ''),
-
-			-- SSL certificate if enabled
-			IF(sc.ssl_enabled = 1, CONCAT(
-				' ssl_certificate ', c.cert_path, ';\n',
-				' ssl_certificate_key ', c.key_path, ';\n'
-			), ''),
-
-			' include ', sc.letsencrypt_config_file, ';\n',
-
-			-- Proxy error intercept
-			IF(sc.proxy_intercept_errors = 1, ' proxy_intercept_errors on;\n\n', ''),
-
-			-- DDoS challenge location
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge',
-				CONCAT(
-					' location = /__gr_challenge_', sc.id, ' {\n',
-					'  default_type text/html;\n',
-					'  add_header Cache-Control \"no-store\";\n',
-					'  add_header Set-Cookie \"gr_challenge_', sc.id, '=1; Path=/; Max-Age=', IFNULL(dp.cookie_ttl, 3600), '; SameSite=Lax\";\n',
-					'  return 200 \"<!doctype html><html><head><meta charset=\\\"utf-8\\\"><meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\"><title>Checking your browser</title><style>:root{--bg0:#070b14;--bg1:#0b1220;--panel:#0f1a2b;--border:rgba(255,255,255,.08);--text:#e5e7eb;--muted:#9ca3af;--muted2:#6b7280;--accent:#f48120;--link:#93c5fd}*{box-sizing:border-box}html,body{height:100%}body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,\\\"Apple Color Emoji\\\",\\\"Segoe UI Emoji\\\";background:linear-gradient(180deg,var(--bg0),var(--bg1));color:var(--text);overflow-x:hidden}body:before{content:\\\"\\\";position:fixed;inset:-20vmax;pointer-events:none;background:radial-gradient(1200px 700px at 18% 6%,rgba(244,129,32,.10),transparent 60%),radial-gradient(1100px 650px at 92% 10%,rgba(59,130,246,.09),transparent 62%),radial-gradient(900px 520px at 50% 110%,rgba(255,255,255,.04),transparent 60%);filter:blur(18px);transform:translateZ(0);opacity:.95}main{position:relative;max-width:760px;margin:8vh auto;padding:24px}header{display:flex;align-items:center;gap:12px;margin-bottom:18px}.logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#fb7185);display:grid;place-items:center;color:#070b14;font-weight:800;letter-spacing:.5px}.brand{display:flex;flex-direction:column;gap:2px}.brand .name{font-weight:800}.brand .tag{color:var(--muted);font-size:13px}.card{background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.02));border:1px solid var(--border);border-radius:14px;padding:24px;box-shadow:0 14px 40px rgba(0,0,0,.38);backdrop-filter:blur(6px)}.muted{color:var(--muted);font-size:14px;line-height:1.5}.title{font-weight:800;font-size:18px;letter-spacing:.2px}.status{display:flex;align-items:center;gap:10px;margin:18px 0;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)}.spinner{width:18px;height:18px;border:3px solid rgba(229,231,235,.18);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.hr{height:1px;background:rgba(255,255,255,.07);margin:16px 0}.footer{margin-top:18px;font-size:12px;color:var(--muted2);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(244,129,32,.15)}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}@media (min-height:900px){main{margin:10vh auto}}@media (prefers-reduced-motion:reduce){.spinner{animation:none}}</style></head><body><main><header><div class=\\\"logo\\\">GR</div><div class=\\\"brand\\\"><div class=\\\"name\\\">GoResolver Security</div><div class=\\\"tag\\\">DDoS protection check</div></div></header><div class=\\\"card\\\"><div class=\\\"title\\\">Checking your browser before accessing the site</div><div class=\\\"muted\\\">This process is automatic. Your browser will redirect shortly.</div><div class=\\\"status\\\"><div class=\\\"spinner\\\"></div><div class=\\\"muted\\\">Verifying your connection…</div></div><div class=\\\"muted\\\">Please allow up to a few seconds.</div><div class=\\\"hr\\\"></div><div class=\\\"muted\\\">If you are seeing this page repeatedly, enable cookies and disable any blockers for this site.</div></div><div class=\\\"footer\\\"><span class=\\\"pill\\\"><span class=\\\"dot\\\"></span>Protected by GoResolver</span><span class=\\\"muted\\\">Performance &amp; security by GoResolver</span></div></main><script>document.cookie=\\\"gr_challenge_', sc.id, '=1; path=/; max-age=', IFNULL(dp.cookie_ttl, 3600), '\\\";var u=new URLSearchParams(window.location.search).get(\\\"u\\\")||\\\"/\\\";setTimeout(function(){window.location=u;},', IFNULL(dp.challenge_delay, 5), '000);</script></body></html>\";\n',
-					' }\n\n'
-				),
-				''
-			),
-
-			-- Main location
-			' location / {\n',
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.mode, '') = 'challenge',
-				CONCAT('  if ($gr_ddos_allow_', sc.id, ' = 0) { return 302 /__gr_challenge_', sc.id, '?u=$request_uri; }\n'),
-				''
-			),
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.rate_limit, 0) > 0,
-				CONCAT('  limit_req zone=gr_', sc.id, '_req burst=', IFNULL(dp.burst, 0), ' nodelay;\n'),
-				''
-			),
-			IF(IFNULL(dp.enabled, 0) = 1 AND IFNULL(dp.conn_limit, 0) > 0,
-				CONCAT('  limit_conn gr_', sc.id, '_conn ', IFNULL(dp.conn_limit, 0), ';\n'),
-				''
-			),
-			' proxy_pass http://', IFNULL(s.ip, ''), ':', IFNULL(sc.proxy_pass_port, ''), ';\n',
-			' proxy_http_version 1.1;\n',
-			' proxy_connect_timeout ', IF(sc.proxy_connect_timeout < 5, 5, sc.proxy_connect_timeout), 's;\n',
-			' proxy_read_timeout ', IF(sc.proxy_read_timeout < 300, 300, sc.proxy_read_timeout), 's;\n',
-			' proxy_send_timeout ', IF(sc.proxy_send_timeout < 300, 300, sc.proxy_send_timeout), 's;\n',
-			' proxy_buffering off;\n',
-			' proxy_request_buffering off;\n',
-			' proxy_force_ranges on;\n',
-			IF(sc.websockets = 1, 
-				' proxy_set_header Upgrade $http_upgrade;\n proxy_set_header Connection $connection_upgrade;\n', 
-				''
-			),
-			' proxy_set_header Host $host;\n',
-			' proxy_set_header X-Forwarded-Host $host;\n',
-			' proxy_set_header X-Real-IP $remote_addr;\n',
-			' proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n',
-			' proxy_set_header X-Forwarded-Port $gr_forwarded_port_', sc.id, ';\n',
-			' proxy_set_header X-Forwarded-Proto $gr_forwarded_proto_', sc.id, ';\n',
-			' proxy_set_header X-Forwarded-Ssl $gr_forwarded_ssl_', sc.id, ';\n',
-			' proxy_set_header Forwarded "for=$proxy_add_x_forwarded_for;proto=$gr_forwarded_proto_', sc.id, ';host=$host";\n',
-			' proxy_redirect http:// https://;\n',
-
-			-- Error pages directives
-			IF(sc.proxy_intercept_errors = 1, CONCAT(
-				GROUP_CONCAT(
-				CONCAT(' error_page ', ef.error_code, ' /', ef.Filename, ';\n') SEPARATOR ''
-				)
-			, ''), ''),
-
-			' }\n\n',
-
-			IF(sc.proxy_intercept_errors = 1, CONCAT(
-				GROUP_CONCAT(
-				CONCAT(
-					' location /', ef.Filename, ' {\n',
-					' root ', ef.Path, ';\n',
-					' default_type text/',ef.response_type,';\n',
-					' sub_filter_types text/html;\n',
-					' sub_filter_once off;\n',
-					' sub_filter \"__GR_RAY_ID__\" $gr_ray_id;\n',
-					' gzip off;\n',
-					' try_files /', ef.Filename, ' =404;\n',
-					' }\n'
-				) SEPARATOR '\n'
-				)
-			, ''), ''),
-
-			'}\n\n',
-
-			-- SSL redirect server
-			IF(sc.ssl_redirect = 1, CONCAT(
-				'server {\n',
-				' listen 80;\n listen [::]:80;\n',
-				' server_name ', sc.server_name, ';\n',
-				' return 301 https://$host$request_uri;\n',
-				'}\n'
-			), '')
-			) AS site_config
-		FROM server_configuration sc
-		LEFT JOIN servers s ON s.id = sc.fk_server
-		LEFT JOIN ddos_policies dp ON dp.server_id = s.id
-		LEFT JOIN certificates c ON c.site_id = sc.id
-		LEFT JOIN error_pages ep ON ep.server_id = sc.fk_server AND ep.site_id = sc.id OR ep.site_id = '*'
-        LEFT JOIN error_page_files ef ON ef.id = ep.error_page_id
-		WHERE sc.server_name = ?
-		) t
-
-	`, SiteName).Scan(&config)
-
-	if err != nil {
-		return "", err
-	}
-
-	if shouldEnableTransparentProxy() {
-		marker := " proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-		inject := marker +
-			" set $gr_proxy_bind_addr off;\n" +
-			" if ($remote_addr !~ \":\") { set $gr_proxy_bind_addr $remote_addr; }\n" +
-			" proxy_bind $gr_proxy_bind_addr transparent;\n"
-		if strings.Contains(config, marker) && !strings.Contains(config, "proxy_bind $remote_addr transparent;") {
-			config = strings.Replace(config, marker, inject, 1)
-		}
-	}
-
-	return config, nil
+	return buildNginxConfig(SiteName)
 }
 
 func shouldEnableTransparentProxy() bool {
@@ -1235,33 +997,27 @@ func ensureDefaultDenySite() error {
 	settings := NewSettingsService()
 	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), "00-default-deny")
 	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), "00-default-deny")
+	enabledValue := strings.TrimSpace(settings.GetValue("nginx.default_deny_enabled"))
+
+	switch strings.ToLower(enabledValue) {
+	case "", "1", "true", "yes", "on":
+	default:
+		removeIfExists(enabledPath)
+		removeIfExists(availablePath)
+		return nil
+	}
 
 	certPath, keyPath, err := ensureDefaultDenyCert()
 	if err != nil {
 		return err
 	}
 
-	config := `server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-    set $gr_ray_id "GR-$request_id";
-    add_header X-Ray-ID $gr_ray_id always;
-    default_type text/html;
-    return 403 "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Access blocked</title><style>body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}a{color:#38bdf8;text-decoration:none} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:24px} .badge{display:inline-block;background:#ef4444;color:#fff;padding:4px 8px;border-radius:999px;font-size:12px}</style></head><body><main><div class=\"card\"><div class=\"badge\">Access denied</div><h1>Access via IP not allowed</h1><p>This host only serves configured domains. Please use a valid hostname.</p></div></main></body></html>";
-}
-server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
-    server_name _;
-    set $gr_ray_id "GR-$request_id";
-    add_header X-Ray-ID $gr_ray_id always;
-    ssl_certificate ` + certPath + `;
-    ssl_certificate_key ` + keyPath + `;
-    default_type text/html;
-    return 403 "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Access blocked</title><style>body{margin:0;font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0}main{max-width:720px;margin:10vh auto;padding:24px}h1{font-size:22px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}a{color:#38bdf8;text-decoration:none} .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:24px} .badge{display:inline-block;background:#ef4444;color:#fff;padding:4px 8px;border-radius:999px;font-size:12px}</style></head><body><main><div class=\"card\"><div class=\"badge\">Access denied</div><h1>Access via IP not allowed</h1><p>This host only serves configured domains. Please use a valid hostname.</p></div></main></body></html>";
-}
-`
+	includePath, err := effectiveLetsEncryptConfigPath(defaultLetsEncryptConfigFile)
+	if err != nil {
+		return err
+	}
+
+	config := renderDefaultDenyConfig(certPath, keyPath, includePath)
 
 	if err := os.WriteFile(availablePath, []byte(config), 0644); err != nil {
 		return err
@@ -1308,11 +1064,11 @@ func ensureDefaultDenyCert() (string, string, error) {
 		Subject: pkix.Name{
 			CommonName: "GoResolver Default Deny",
 		},
-		NotBefore: time.Now().Add(-time.Hour),
-		NotAfter:  time.Now().AddDate(5, 0, 0),
-		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    time.Now().AddDate(5, 0, 0),
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:  []string{"localhost"},
+		DNSNames:    []string{"localhost"},
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
@@ -1373,7 +1129,7 @@ func DeleteNginxConfig(serverName string) error {
 func (s *ServerConfigurationService) Delete(id string, serverName string) error {
 	_, err := db.DB.Exec(
 		"DELETE FROM server_configuration WHERE id=?",
-		 id,
+		id,
 	)
 	if err != nil {
 		log.Println("DELETE record failed:", err)
@@ -1385,64 +1141,64 @@ func (s *ServerConfigurationService) Delete(id string, serverName string) error 
 }
 
 func (s *ServerConfigurationService) GenerateVPNClientConfig(
-    serverID string,
-    clientName string,
-    caPassphrase string, 
+	serverID string,
+	clientName string,
+	caPassphrase string,
 ) (string, error) {
 
-    settings := NewSettingsService()
-    pkiDir := settings.GetValue("openvpn.pki_dir")
-    easyRSADir := settings.GetValue("openvpn.ca_dir")
-    easyRSA := settings.GetValue("openvpn.easy_rsa_path")
+	settings := NewSettingsService()
+	pkiDir := settings.GetValue("openvpn.pki_dir")
+	easyRSADir := settings.GetValue("openvpn.ca_dir")
+	easyRSA := settings.GetValue("openvpn.easy_rsa_path")
 
-    caCertPath := filepath.Join(pkiDir, "ca.crt")
-    clientCertPath := filepath.Join(pkiDir, "issued", clientName+".crt")
-    clientKeyPath := filepath.Join(pkiDir, "private", clientName+".key")
-    taKeyPath := filepath.Join(easyRSADir, "ta.key")
+	caCertPath := filepath.Join(pkiDir, "ca.crt")
+	clientCertPath := filepath.Join(pkiDir, "issued", clientName+".crt")
+	clientKeyPath := filepath.Join(pkiDir, "private", clientName+".key")
+	taKeyPath := filepath.Join(easyRSADir, "ta.key")
 
-    if _, err := os.Stat(clientCertPath); os.IsNotExist(err) {
+	if _, err := os.Stat(clientCertPath); os.IsNotExist(err) {
 
-        args := []string{"build-client-full", clientName, "nopass"}
-        cmd := exec.Command(easyRSA, args...)
-        cmd.Dir = easyRSADir
+		args := []string{"build-client-full", clientName, "nopass"}
+		cmd := exec.Command(easyRSA, args...)
+		cmd.Dir = easyRSADir
 
-        env := os.Environ()
-        env = append(env, "EASYRSA_BATCH=1")
+		env := os.Environ()
+		env = append(env, "EASYRSA_BATCH=1")
 
-        if caPassphrase != "" {
-            env = append(env, "EASYRSA_PASSIN=pass:"+caPassphrase)
-        }
+		if caPassphrase != "" {
+			env = append(env, "EASYRSA_PASSIN=pass:"+caPassphrase)
+		}
 
-        cmd.Env = env
+		cmd.Env = env
 
-        output, err := cmd.CombinedOutput()
-        if err != nil {
-            return "", fmt.Errorf(
-                "easy-rsa failed: %v\n%s",
-                err,
-                string(output),
-            )
-        }
-    }
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf(
+				"easy-rsa failed: %v\n%s",
+				err,
+				string(output),
+			)
+		}
+	}
 
-    ca, err := os.ReadFile(caCertPath)
-    if err != nil {
-        return "", err
-    }
+	ca, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return "", err
+	}
 
-    cert, err := os.ReadFile(clientCertPath)
-    if err != nil {
-        return "", err
-    }
+	cert, err := os.ReadFile(clientCertPath)
+	if err != nil {
+		return "", err
+	}
 
-    key, err := os.ReadFile(clientKeyPath)
-    if err != nil {
-        return "", err
-    }
+	key, err := os.ReadFile(clientKeyPath)
+	if err != nil {
+		return "", err
+	}
 
-    taKey, _ := os.ReadFile(taKeyPath)
+	taKey, _ := os.ReadFile(taKeyPath)
 
-    conf := fmt.Sprintf(`client
+	conf := fmt.Sprintf(`client
 dev tun
 proto udp
 remote %s %s
@@ -1467,26 +1223,26 @@ key-direction 1
 %s
 </key>
 `,
-        settings.GetValue("openvpn.remote_host"),
-        settings.GetValue("openvpn.remote_port"),
-        string(ca),
-        string(cert),
-        string(key),
-    )
+		settings.GetValue("openvpn.remote_host"),
+		settings.GetValue("openvpn.remote_port"),
+		string(ca),
+		string(cert),
+		string(key),
+	)
 
-    if len(taKey) > 0 {
-        conf += fmt.Sprintf(`
+	if len(taKey) > 0 {
+		conf += fmt.Sprintf(`
 <tls-auth>
 %s
 </tls-auth>
 `, string(taKey))
-    }
+	}
 
-    return conf, nil
+	return conf, nil
 }
 
 func (s *ServerConfigurationService) SaveVPNConfig(serverID string, config []byte) error {
-    query := `UPDATE servers SET vpn_file = ? WHERE id = ?`
+	query := `UPDATE servers SET vpn_file = ? WHERE id = ?`
 
 	if len(config) > 0 {
 		encrypted, err := EncryptVPN(config)
@@ -1497,8 +1253,8 @@ func (s *ServerConfigurationService) SaveVPNConfig(serverID string, config []byt
 		}
 	}
 
-    _, err := db.DB.Exec(query, config, serverID)
-    return err
+	_, err := db.DB.Exec(query, config, serverID)
+	return err
 }
 
 func (s *ServerConfigurationService) UpdateServerIP(serverID, ip string) error {
@@ -1510,25 +1266,33 @@ func (s *ServerConfigurationService) UpdateServerIP(serverID, ip string) error {
 }
 
 func (s *ServerConfigurationService) AssignStaticVPNIP(clientName, ip string) error {
-    settings := NewSettingsService()
-    ccdDir := settings.GetValue("openvpn.ccd_dir")
-    path := filepath.Join(ccdDir, clientName)
+	settings := NewSettingsService()
+	ccdDir := settings.GetValue("openvpn.ccd_dir")
+	path := filepath.Join(ccdDir, clientName)
 
-    content := fmt.Sprintf(
-        "ifconfig-push %s 255.255.255.0\n",
-        ip,
-    )
+	content := fmt.Sprintf(
+		"ifconfig-push %s 255.255.255.0\n",
+		ip,
+	)
 
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return err
 	}
 
-    return nil
+	return nil
 }
 
-
 func EncryptVPN(data []byte) ([]byte, error) {
-	block, err := aes.NewCipher(aesKey)
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	keys, err := vpnEncryptionKeys()
+	if err != nil {
+		return nil, err
+	}
+
+	block, err := aes.NewCipher(keys[0])
 	if err != nil {
 		return nil, err
 	}
@@ -1540,12 +1304,61 @@ func EncryptVPN(data []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	ciphertext := gcm.Seal(nonce, nonce, data, nil) 
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
 	return ciphertext, nil
 }
 
 func DecryptVPN(ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(aesKey)
+	if len(ciphertext) == 0 {
+		return nil, nil
+	}
+
+	keys, err := vpnEncryptionKeys()
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, key := range keys {
+		plaintext, err := decryptVPNWithKey(ciphertext, key)
+		if err == nil {
+			return plaintext, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("decryption failed: %w", lastErr)
+}
+
+func vpnEncryptionKeys() ([][]byte, error) {
+	currentSecret, err := config.RequiredSecret("GORESOLVER_VPN_ENCRYPTION_SECRET")
+	if err != nil {
+		return nil, err
+	}
+
+	currentKey, err := config.DeriveKey(currentSecret, "goresolver-vpn-aes-gcm", 32)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := [][]byte{currentKey}
+
+	previousSecret, ok, err := config.OptionalSecret("GORESOLVER_VPN_ENCRYPTION_SECRET_PREVIOUS")
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		previousKey, err := config.DeriveKey(previousSecret, "goresolver-vpn-aes-gcm", 32)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, previousKey)
+	}
+
+	return keys, nil
+}
+
+func decryptVPNWithKey(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -1558,30 +1371,25 @@ func DecryptVPN(ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 	nonce, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ct, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decryption failed: %w", err)
-	}
-	return plaintext, nil
+	return gcm.Open(nil, nonce, ct, nil)
 }
 
 type User struct {
-	Email string 
+	Email        string
 	Registration *registration.Resource
-	Key crypto.PrivateKey
+	Key          crypto.PrivateKey
 }
 
-func(u *User) GetEmail() string {
+func (u *User) GetEmail() string {
 	return u.Email
 }
 
-func(u *User) GetRegistration() *registration.Resource {
+func (u *User) GetRegistration() *registration.Resource {
 	return u.Registration
 }
 func (u *User) GetPrivateKey() crypto.PrivateKey {
 	return u.Key
 }
-
 
 func (s *ServerConfigurationService) IssueCert(
 	siteID string,
@@ -1637,7 +1445,7 @@ func (s *ServerConfigurationService) IssueCert(
 	}
 
 	certPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".crt")
-	keyPath  := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
+	keyPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
 
 	if err := os.WriteFile(certPath, certRes.Certificate, 0600); err != nil {
 		return err
@@ -1646,7 +1454,10 @@ func (s *ServerConfigurationService) IssueCert(
 		return err
 	}
 
-	expiry := extractExpiration(certRes.Certificate)
+	expiry, err := extractExpiration(certRes.Certificate)
+	if err != nil {
+		return err
+	}
 
 	insertCert(
 		siteID,
@@ -1732,7 +1543,10 @@ func (s *ServerConfigurationService) RenewCert(siteID string) error {
 		return err
 	}
 
-	expiry := extractExpiration(certRes.Certificate)
+	expiry, err := extractExpiration(certRes.Certificate)
+	if err != nil {
+		return err
+	}
 	if err := updateCert(siteID, domain, certPath, keyPath, expiry); err != nil {
 		return err
 	}
@@ -1740,15 +1554,16 @@ func (s *ServerConfigurationService) RenewCert(siteID string) error {
 	return nil
 }
 
-
-
-func extractExpiration(certPEM []byte) time.Time {
+func extractExpiration(certPEM []byte) (time.Time, error) {
 	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return time.Time{}, fmt.Errorf("invalid certificate PEM")
+	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		panic(err)
+		return time.Time{}, err
 	}
-	return cert.NotAfter
+	return cert.NotAfter, nil
 }
 
 func insertCert(
@@ -1814,7 +1629,6 @@ func updateCert(
 	return nil
 }
 
-
 func activateSSL(siteID string, domain string) {
 	_, err := db.DB.Exec(`
 		UPDATE server_configuration 
@@ -1877,7 +1691,6 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 		return fmt.Errorf("failed to parse private key: %w", err)
 	}
 
-
 	user := &User{
 		Email: NewSettingsService().GetValue("acme.email"),
 		Key:   privKey,
@@ -1897,7 +1710,7 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 			return fmt.Errorf("certificate revocation failed for %s: %w", domain, err)
 		}
 	}
-	
+
 	_, err = db.DB.Exec(`
 		UPDATE server_configuration 
 		SET ssl_enabled = 0, server_port = 80, ssl_redirect = 0
@@ -1924,11 +1737,10 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 	return nil
 }
 
-
 func fsRemoveCert(domain string) {
 	settings := NewSettingsService()
 	certPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".crt")
-	keyPath  := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
+	keyPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
 
 	if err := os.Remove(certPath); err != nil {
 		log.Fatal(err)
@@ -1938,269 +1750,267 @@ func fsRemoveCert(domain string) {
 	}
 }
 
-
 func (s *ServerConfigurationService) ListIPTablesRules() ([]models.IPTablesRule, error) {
-    var rules []models.IPTablesRule
+	var rules []models.IPTablesRule
 
-    tables := []string{"filter", "nat"}
+	tables := []string{"filter", "nat"}
 
-    reConnLimit := regexp.MustCompile(`#conn src/32 > (\d+)`)
-    reComment := regexp.MustCompile(`/\* (.+?) \*/`)
+	reConnLimit := regexp.MustCompile(`#conn src/32 > (\d+)`)
+	reComment := regexp.MustCompile(`/\* (.+?) \*/`)
 
-    for _, table := range tables {
-        args := []string{}
-        if table != "filter" {
-            args = append(args, "-t", table)
-        }
-        args = append(args, "-L", "-v", "-n", "--line-numbers")
+	for _, table := range tables {
+		args := []string{}
+		if table != "filter" {
+			args = append(args, "-t", table)
+		}
+		args = append(args, "-L", "-v", "-n", "--line-numbers")
 
-        cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-        out, err := cmd.CombinedOutput()
-        if err != nil {
-            return nil, fmt.Errorf("iptables list (%s) failed: %s", table, out)
-        }
+		cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("iptables list (%s) failed: %s", table, out)
+		}
 
-        lines := strings.Split(string(out), "\n")
+		lines := strings.Split(string(out), "\n")
 
-        currentChain := ""
+		currentChain := ""
 
-        for _, line := range lines {
-            line = strings.TrimSpace(line)
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
 
-            if strings.HasPrefix(line, "Chain ") {
-                // Example: Chain INPUT (policy ACCEPT)
-                parts := strings.Fields(line)
-                if len(parts) >= 2 {
-                    currentChain = parts[1]
-                }
-                continue
-            }
+			if strings.HasPrefix(line, "Chain ") {
+				// Example: Chain INPUT (policy ACCEPT)
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					currentChain = parts[1]
+				}
+				continue
+			}
 
-            if line == "" || strings.HasPrefix(line, "pkts") {
-                continue
-            }
+			if line == "" || strings.HasPrefix(line, "pkts") {
+				continue
+			}
 
-            fields := strings.Fields(line)
-            if len(fields) < 10 {
-                continue
-            }
+			fields := strings.Fields(line)
+			if len(fields) < 10 {
+				continue
+			}
 
-            extra := strings.Join(fields[10:], " ")
+			extra := strings.Join(fields[10:], " ")
 
-            // Extract limit
-            limit := ""
-            if m := reConnLimit.FindStringSubmatch(extra); len(m) == 2 {
-                limit = m[1]
-            }
+			// Extract limit
+			limit := ""
+			if m := reConnLimit.FindStringSubmatch(extra); len(m) == 2 {
+				limit = m[1]
+			}
 
-            // Extract comment
-            comment := ""
-            if m := reComment.FindStringSubmatch(extra); len(m) == 2 {
-                comment = m[1]
-            }
+			// Extract comment
+			comment := ""
+			if m := reComment.FindStringSubmatch(extra); len(m) == 2 {
+				comment = m[1]
+			}
 
-            rule := models.IPTablesRule{
-                Table:       table,
-                Chain:       currentChain,
-                Num:         fields[0],
-                Pkts:        fields[1],
-                Bytes:       fields[2],
-                Target:      fields[3],
-                Prot:        fields[4],
-                Opt:         fields[5],
-                In:          fields[6],
-                Out:         fields[7],
-                Source:      fields[8],
-                Destination: fields[9],
-                Extra:       comment,
-                Limit:       limit,
-            }
+			rule := models.IPTablesRule{
+				Table:       table,
+				Chain:       currentChain,
+				Num:         fields[0],
+				Pkts:        fields[1],
+				Bytes:       fields[2],
+				Target:      fields[3],
+				Prot:        fields[4],
+				Opt:         fields[5],
+				In:          fields[6],
+				Out:         fields[7],
+				Source:      fields[8],
+				Destination: fields[9],
+				Extra:       comment,
+				Limit:       limit,
+			}
 
-            rules = append(rules, rule)
-        }
-    }
+			rules = append(rules, rule)
+		}
+	}
 
-    sort.SliceStable(rules, func(i, j int) bool {
-        if rules[i].Table != rules[j].Table {
-            return rules[i].Table < rules[j].Table
-        }
-        if rules[i].Chain != rules[j].Chain {
-            return rules[i].Chain < rules[j].Chain
-        }
-        ni, _ := strconv.Atoi(rules[i].Num)
-        nj, _ := strconv.Atoi(rules[j].Num)
-        return ni < nj
-    })
+	sort.SliceStable(rules, func(i, j int) bool {
+		if rules[i].Table != rules[j].Table {
+			return rules[i].Table < rules[j].Table
+		}
+		if rules[i].Chain != rules[j].Chain {
+			return rules[i].Chain < rules[j].Chain
+		}
+		ni, _ := strconv.Atoi(rules[i].Num)
+		nj, _ := strconv.Atoi(rules[j].Num)
+		return ni < nj
+	})
 
-    return rules, nil
+	return rules, nil
 }
 
-
 func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error {
-    args := []string{}
+	args := []string{}
 
-    if spec.Table != "" && spec.Table != "filter" {
-        args = append(args, "-t", spec.Table)
-    }
+	if spec.Table != "" && spec.Table != "filter" {
+		args = append(args, "-t", spec.Table)
+	}
 
-    action := "-A"
-    if strings.EqualFold(spec.Action, "insert") {
-        action = "-I"
-    }
-    args = append(args, action, spec.Chain)
-    if action == "-I" && spec.Position > 0 {
-        args = append(args, strconv.Itoa(spec.Position))
-    }
+	action := "-A"
+	if strings.EqualFold(spec.Action, "insert") {
+		action = "-I"
+	}
+	args = append(args, action, spec.Chain)
+	if action == "-I" && spec.Position > 0 {
+		args = append(args, strconv.Itoa(spec.Position))
+	}
 
-    if spec.Protocol != "" && spec.Protocol != "all" {
-        args = append(args, "-p", spec.Protocol)
-    }
+	if spec.Protocol != "" && spec.Protocol != "all" {
+		args = append(args, "-p", spec.Protocol)
+	}
 
-    if spec.InInterface != "" {
-        args = append(args, "-i", spec.InInterface)
-    }
+	if spec.InInterface != "" {
+		args = append(args, "-i", spec.InInterface)
+	}
 
-    if spec.OutInterface != "" {
-        args = append(args, "-o", spec.OutInterface)
-    }
+	if spec.OutInterface != "" {
+		args = append(args, "-o", spec.OutInterface)
+	}
 
-    if spec.SynOnly {
-        args = append(args, "--syn")
-    }
+	if spec.SynOnly {
+		args = append(args, "--syn")
+	}
 
-    if spec.SourceIP != "" {
-        args = append(args, "-s", spec.SourceIP)
-    }
+	if spec.SourceIP != "" {
+		args = append(args, "-s", spec.SourceIP)
+	}
 
-    if spec.DestIP != "" {
-        args = append(args, "-d", spec.DestIP)
-    }
+	if spec.DestIP != "" {
+		args = append(args, "-d", spec.DestIP)
+	}
 
-    if spec.SourcePort > 0 {
-        args = append(args, "--sport", strconv.Itoa(spec.SourcePort))
-    }
+	if spec.SourcePort > 0 {
+		args = append(args, "--sport", strconv.Itoa(spec.SourcePort))
+	}
 
-    if spec.DestPort > 0 {
-        args = append(args, "--dport", strconv.Itoa(spec.DestPort))
-    }
+	if spec.DestPort > 0 {
+		args = append(args, "--dport", strconv.Itoa(spec.DestPort))
+	}
 
-    if spec.ConnLimit != nil {
-        args = append(args,
-            "-m", "connlimit",
-            "--connlimit-above", strconv.Itoa(*spec.ConnLimit),
-            "--connlimit-mask", "32",
-        )
-    }
+	if spec.ConnLimit != nil {
+		args = append(args,
+			"-m", "connlimit",
+			"--connlimit-above", strconv.Itoa(*spec.ConnLimit),
+			"--connlimit-mask", "32",
+		)
+	}
 
-    if spec.LimitRate != "" {
-        args = append(args,
-            "-m", "limit",
-            "--limit", spec.LimitRate,
-        )
-        if spec.LimitBurst != "" {
-            args = append(args, "--limit-burst", spec.LimitBurst)
-        }
-    }
+	if spec.LimitRate != "" {
+		args = append(args,
+			"-m", "limit",
+			"--limit", spec.LimitRate,
+		)
+		if spec.LimitBurst != "" {
+			args = append(args, "--limit-burst", spec.LimitBurst)
+		}
+	}
 
-    if spec.ConnState != "" {
-        args = append(args, "-m", "conntrack", "--ctstate", spec.ConnState)
-    }
+	if spec.ConnState != "" {
+		args = append(args, "-m", "conntrack", "--ctstate", spec.ConnState)
+	}
 
-    if spec.IcmpType != "" {
-        args = append(args, "--icmp-type", spec.IcmpType)
-    }
+	if spec.IcmpType != "" {
+		args = append(args, "--icmp-type", spec.IcmpType)
+	}
 
-    hasJump := hasJumpArg(spec.ExtraArgs)
-    if len(spec.ExtraArgs) > 0 {
-        args = append(args, spec.ExtraArgs...)
-    }
+	hasJump := hasJumpArg(spec.ExtraArgs)
+	if len(spec.ExtraArgs) > 0 {
+		args = append(args, spec.ExtraArgs...)
+	}
 
-    if !hasJump && spec.Target == "DNAT" {
-        args = append(args,
-            "-j", "DNAT",
-            "--to-destination", fmt.Sprintf("%s:%d", spec.ToIP, spec.ToPort),
-        )
-    } else if !hasJump && spec.Target != "" {
-        args = append(args, "-j", spec.Target)
+	if !hasJump && spec.Target == "DNAT" {
+		args = append(args,
+			"-j", "DNAT",
+			"--to-destination", fmt.Sprintf("%s:%d", spec.ToIP, spec.ToPort),
+		)
+	} else if !hasJump && spec.Target != "" {
+		args = append(args, "-j", spec.Target)
 
-        if spec.Target == "LOG" && spec.LogPrefix != "" {
-            args = append(args, "--log-prefix", spec.LogPrefix)
-        }
-        if spec.Target == "LOG" && spec.LogLevel != "" {
-            args = append(args, "--log-level", spec.LogLevel)
-        }
-        if spec.Target == "REJECT" && spec.RejectWith != "" {
-            args = append(args, "--reject-with", spec.RejectWith)
-        }
-    }
+		if spec.Target == "LOG" && spec.LogPrefix != "" {
+			args = append(args, "--log-prefix", spec.LogPrefix)
+		}
+		if spec.Target == "LOG" && spec.LogLevel != "" {
+			args = append(args, "--log-level", spec.LogLevel)
+		}
+		if spec.Target == "REJECT" && spec.RejectWith != "" {
+			args = append(args, "--reject-with", spec.RejectWith)
+		}
+	}
 
-    if spec.Comment != "" {
-        args = append(args, "-m", "comment", "--comment", spec.Comment)
-    }
+	if spec.Comment != "" {
+		args = append(args, "-m", "comment", "--comment", spec.Comment)
+	}
 
-    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-    out, err := cmd.CombinedOutput()
-    if err != nil {
-        return fmt.Errorf("iptables error: %s", out)
-    }
+	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables error: %s", out)
+	}
 
-    return nil
+	return nil
 }
 
 func hasJumpArg(args []string) bool {
-    for i := 0; i < len(args); i++ {
-        if args[i] == "-j" || args[i] == "--jump" {
-            return true
-        }
-    }
-    return false
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-j" || args[i] == "--jump" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ServerConfigurationService) DeleteRule(chain string, num int, table string) error {
-    args := []string{}
-    if table != "" && table != "filter" {
-        args = append(args, "-t", table)
-    }
-    args = append(args, "-D", chain, strconv.Itoa(num))
+	args := []string{}
+	if table != "" && table != "filter" {
+		args = append(args, "-t", table)
+	}
+	args = append(args, "-D", chain, strconv.Itoa(num))
 
-    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-    out, err := cmd.CombinedOutput()
-    if err != nil {
-        return fmt.Errorf("iptables delete failed: %s", string(out))
-    }
-    return nil
+	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables delete failed: %s", string(out))
+	}
+	return nil
 }
 
 func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment string) error {
-    args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
-    cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-    out, err := cmd.CombinedOutput()
-    if err != nil {
-        return fmt.Errorf("iptables list failed: %s", string(out))
-    }
+	args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
+	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables list failed: %s", string(out))
+	}
 
-    lines := strings.Split(string(out), "\n")
-    var nums []int
-    for _, line := range lines {
-        if strings.Contains(line, comment) {
-            fields := strings.Fields(line)
-            if len(fields) > 0 {
-                num, _ := strconv.Atoi(fields[0])
-                if num > 0 {
-                    nums = append(nums, num)
-                }
-            }
-        }
-    }
-    if len(nums) == 0 {
-        return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
-    }
-    sort.Sort(sort.Reverse(sort.IntSlice(nums)))
-    var lastErr error
-    for _, num := range nums {
-        if err := s.DeleteRule(chain, num, table); err != nil {
-            lastErr = err
-        }
-    }
-    return lastErr
+	lines := strings.Split(string(out), "\n")
+	var nums []int
+	for _, line := range lines {
+		if strings.Contains(line, comment) {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				num, _ := strconv.Atoi(fields[0])
+				if num > 0 {
+					nums = append(nums, num)
+				}
+			}
+		}
+	}
+	if len(nums) == 0 {
+		return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(nums)))
+	var lastErr error
+	for _, num := range nums {
+		if err := s.DeleteRule(chain, num, table); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }

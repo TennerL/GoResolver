@@ -7,7 +7,7 @@ import (
 )
 
 func isAuthenticated(r *http.Request) (bool, error) {
-	sess, err := session.Store.Get(r, "session")
+	sess, err := session.Get(r, "session")
 	if err != nil {
 		return false, err
 	}

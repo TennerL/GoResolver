@@ -57,6 +57,9 @@ export function useSPA() {
 export function statusColor(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "online" || normalized === "genuine") return "teal";
+  if (normalized === "checking") return "blue";
+  if (normalized === "dnssec error") return "orange";
+  if (normalized === "delegation mismatch") return "yellow";
   if (normalized === "offline" || normalized === "suspicious") return "red";
   return "gray";
 }
@@ -73,7 +76,7 @@ export function downloadText(filename, content) {
 }
 
 export async function fetchJSON(url, init) {
-  const response = await fetch(url, init);
+  const response = await fetch(url, { cache: "no-store", ...init });
   if (response.status === 401) {
     window.location.assign("/login");
     throw new Error("Unauthorized");
@@ -124,8 +127,9 @@ export function ActionForm({ action, fields, confirmMessage, children, className
   const handleSubmit = (event) => {
     if (confirmMessage && !window.confirm(confirmMessage)) event.preventDefault();
   };
+  const spaIgnore = typeof action === "string" && /\/servers\/\d+\/server_configuration$/.test(action);
   return (
-    <form method="post" action={action} className={className} onSubmit={handleSubmit}>
+    <form method="post" action={action} className={className} onSubmit={handleSubmit} data-spa-ignore={spaIgnore ? "true" : undefined}>
       {Object.entries(fields || {}).map(([name, value]) => value === undefined ? null : <input key={name} type="hidden" name={name} value={String(value)} />)}
       {children}
     </form>

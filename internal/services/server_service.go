@@ -117,22 +117,25 @@ func isIPv4(ip string) bool {
 	return parsed.To4() != nil
 }
 
-func(s *ServerService) AddServer(srv models.Server) error {
+func (s *ServerService) AddServer(srv models.Server) error {
 	result, err := db.DB.Exec(`
 		INSERT INTO servers (name, ip)
 		VALUES (?,?)
-	`, 
-		srv.Name,
-		srv.IP,
+	`,
+		strings.TrimSpace(srv.Name),
+		strings.TrimSpace(srv.IP),
 	)
 	if err != nil {
 		log.Println("Error adding new server:", err)
+		return err
 	}
 
-	rows, _ := result.RowsAffected()
-	log.Println("Rows inserted into server_configuration:", rows)
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr == nil {
+		log.Println("Rows inserted into servers:", rows)
+	}
 
-	return nil
+	return rowsErr
 }
 
 func (s *ServerService) DeleteServer(serverID string) error {

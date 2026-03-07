@@ -1,8 +1,8 @@
-import { Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Text, TextInput, Textarea, Title } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Text, TextInput, Textarea, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { ActionForm, EmptyState, PageHeader, StatusBadge } from "../common";
-import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconShieldLock, IconTrash } from "@tabler/icons-react";
-import { useMemo, useState } from "react";
+import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconSearch, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
+import { useDeferredValue, useMemo, useState } from "react";
 
 export function LoginPageView({ page }) {
   return (
@@ -192,12 +192,22 @@ export function ServersPageView({ page }) {
 }
 
 export function SettingsPageView({ page }) {
-  const groups = useMemo(() => (page.Data?.Items || []).reduce((accumulator, item) => {
+  const items = Array.isArray(page.Data?.Items) ? page.Data.Items : [];
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const normalizedQuery = deferredQuery.trim().toLowerCase();
+  const groups = useMemo(() => items.reduce<Record<string, Array<(typeof items)[number]>>>((accumulator, item) => {
+    const haystack = [item.Label, item.Key, item.Help, item.Value].join(" ").toLowerCase();
+    if (normalizedQuery && !haystack.includes(normalizedQuery)) {
+      return accumulator;
+    }
     const group = item.Group || "General";
     accumulator[group] = accumulator[group] || [];
     accumulator[group].push(item);
     return accumulator;
-  }, {}), [page.Data]);
+  }, {}), [items, normalizedQuery]);
+  const groupEntries = useMemo(() => Object.entries(groups), [groups]);
+  const filteredCount = useMemo(() => groupEntries.reduce((count, [, groupItems]) => count + groupItems.length, 0), [groupEntries]);
   const copyValue = async (value) => {
     try {
       await navigator.clipboard.writeText(value || "");
@@ -208,30 +218,68 @@ export function SettingsPageView({ page }) {
   return (
     <Container fluid>
       <PageHeader title="Settings" description="Edit runtime settings without repeating the form markup across templates." actions={page.Data?.Saved ? <Badge color="teal">Saved</Badge> : null} />
-      <form method="post" action="/settings">
-        <Stack gap="lg">
-          {Object.entries(groups).map(([group, items]) => (
-            <Paper key={group} radius="xl" p="lg" className="soft-panel">
-              <Stack gap="md">
-                <div><Title order={4}>{group}</Title></div>
-                {items.map((item) => (
-                  <Paper key={item.Key} radius="lg" p="md" className="shell-panel">
-                    <Stack gap="xs">
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
-                        <div><Text fw={600}>{item.Label}</Text>{item.Help ? <Text size="sm" c="dimmed">{item.Help}</Text> : null}</div>
-                        {item.ReadOnly ? <Button type="button" variant="light" color="gray" onClick={() => void copyValue(item.Value)}>Copy</Button> : null}
-                      </div>
-                      {item.Key === "dns.dnssec_public_key_json" ? (item.ReadOnly ? <Textarea name={item.Key} value={item.Value} readOnly minRows={8} autosize /> : <Textarea name={item.Key} defaultValue={item.Value} minRows={8} autosize />) : (item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : <TextInput name={item.Key} defaultValue={item.Value} />)}
-                      <Text size="xs" c="dimmed">Key: <Code className="code-chip">{item.Key}</Code></Text>
-                    </Stack>
-                  </Paper>
-                ))}
-              </Stack>
-            </Paper>
-          ))}
-          <div style={{ display: "flex", justifyContent: "end" }}><Button type="submit">Save Settings</Button></div>
-        </Stack>
-      </form>
+      <Stack gap="lg">
+        <Paper radius="xl" p="lg" className="soft-panel settings-toolbar">
+          <Stack gap="sm">
+            <div className="settings-toolbar-row">
+              <TextInput
+                className="settings-search-input"
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                placeholder="Search by label, key, help text, or current value"
+                leftSection={<IconSearch size={16} />}
+                rightSection={query ? (
+                  <ActionIcon variant="subtle" color="gray" onClick={() => setQuery("")} aria-label="Clear search">
+                    <IconX size={14} />
+                  </ActionIcon>
+                ) : null}
+                rightSectionPointerEvents="all"
+              />
+            </div>
+            <div className="settings-toolbar-meta">
+              <Text size="sm" c="dimmed">
+                Showing {filteredCount} of {items.length} settings in {groupEntries.length} groups.
+              </Text>
+              {normalizedQuery ? <Badge variant="light" color="gray">Filter: {query.trim()}</Badge> : null}
+            </div>
+          </Stack>
+        </Paper>
+        <form method="post" action="/settings">
+          <Stack gap="lg">
+            {groupEntries.length === 0 ? (
+              <Paper radius="xl" p="lg" className="soft-panel">
+                <EmptyState title="No settings match this filter" description="Try a shorter term, a setting key, or a path fragment." />
+              </Paper>
+            ) : groupEntries.map(([group, groupItems]) => (
+              <Paper key={group} radius="xl" p="lg" className="soft-panel">
+                <Stack gap="md">
+                  <div className="settings-group-header">
+                    <Title order={4}>{group}</Title>
+                    <Badge variant="light" color="gray">{groupItems.length}</Badge>
+                  </div>
+                  {groupItems.map((item) => (
+                    <Paper key={`${item.Key}:${item.Value}`} radius="lg" p="md" className="shell-panel">
+                      <Stack gap="xs">
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
+                          <div><Text fw={600}>{item.Label}</Text>{item.Help ? <Text size="sm" c="dimmed">{item.Help}</Text> : null}</div>
+                          {item.ReadOnly ? <Button type="button" variant="light" color="gray" onClick={() => void copyValue(item.Value)}>Copy</Button> : null}
+                        </div>
+                        {item.Key === "dns.dnssec_private_key_pem" || item.Key === "dns.dnssec_public_key_json" || (item.ReadOnly && String(item.Value || "").includes("\n")) ? (
+                          item.ReadOnly ? <Textarea name={item.Key} value={item.Value} readOnly minRows={8} autosize /> : <Textarea name={item.Key} defaultValue={item.Value} minRows={8} autosize />
+                        ) : (
+                          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : <TextInput name={item.Key} defaultValue={item.Value} />
+                        )}
+                        <Text size="xs" c="dimmed">Key: <Code className="code-chip">{item.Key}</Code></Text>
+                      </Stack>
+                    </Paper>
+                  ))}
+                </Stack>
+              </Paper>
+            ))}
+            <div style={{ display: "flex", justifyContent: "end" }}><Button type="submit" disabled={groupEntries.length === 0}>Save Settings</Button></div>
+          </Stack>
+        </form>
+      </Stack>
     </Container>
   );
 }

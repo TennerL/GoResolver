@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "vite build"
+    "build": "node ./node_modules/vite/bin/vite.js build"
   },
   "dependencies": {
     "@mantine/core": "^8.3.5",

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-type AnalyticsService struct {}
+type AnalyticsService struct{}
 
 func NewAnalyticsService() *AnalyticsService {
 	return &AnalyticsService{}
@@ -40,9 +40,14 @@ func (s *AnalyticsService) RequestsOverTime(minutes int, host string) ([]string,
 	for rows.Next() {
 		var l string
 		var v int
-		rows.Scan(&l, &v)
+		if err := rows.Scan(&l, &v); err != nil {
+			return nil, nil, err
+		}
 		labels = append(labels, l)
 		values = append(values, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
 	return labels, values, nil
 }
@@ -64,86 +69,87 @@ func (s *AnalyticsService) StatusCodes(minutes int, host string) (map[int]int, e
 	result := make(map[int]int)
 	for rows.Next() {
 		var status, count int
-		rows.Scan(&status, &count)
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
 		result[status] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
 func (s *AnalyticsService) TopURIs(minutes int, host string) ([]string, map[string][]int, error) {
-    query := `
-        SELECT uri, status, COUNT(*) as hits
-        FROM nginx_logs
-        WHERE time >= NOW() - INTERVAL ? MINUTE
-          AND (? = '' OR host = ?)
-        GROUP BY uri, status
-        ORDER BY hits DESC
-        LIMIT 20
-    `
+	query := `
+		SELECT uri, status, COUNT(*) as hits
+		FROM nginx_logs
+		WHERE time >= NOW() - INTERVAL ? MINUTE
+		  AND (? = '' OR host = ?)
+		GROUP BY uri, status
+		ORDER BY hits DESC
+		LIMIT 20
+	`
 
-    rows, err := db.DB.Query(query, minutes, host, host)
-    if err != nil {
-        return nil, nil, err
-    }
-    defer rows.Close()
+	rows, err := db.DB.Query(query, minutes, host, host)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
 
-    type entry struct {
-        URI    string
-        Status int
-        Count  int
-    }
-    entries := []entry{}
-    statusSet := map[int]struct{}{}
-    uriSet := map[string]struct{}{}
+	type entry struct {
+		URI    string
+		Status int
+		Count  int
+	}
+	entries := []entry{}
+	statusSet := map[int]struct{}{}
 
-    for rows.Next() {
-        var e entry
-        if err := rows.Scan(&e.URI, &e.Status, &e.Count); err != nil {
-            return nil, nil, err
-        }
-        entries = append(entries, e)
-        statusSet[e.Status] = struct{}{}
-        uriSet[e.URI] = struct{}{}
-    }
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.URI, &e.Status, &e.Count); err != nil {
+			return nil, nil, err
+		}
+		entries = append(entries, e)
+		statusSet[e.Status] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
 
-    labels := []string{}
-    seen := map[string]struct{}{}
-    for _, e := range entries {
-        if _, ok := seen[e.URI]; !ok {
-            labels = append(labels, e.URI)
-            seen[e.URI] = struct{}{}
-            if len(labels) >= 10 {
-                break
-            }
-        }
-    }
+	labels := []string{}
+	seen := map[string]struct{}{}
+	for _, e := range entries {
+		if _, ok := seen[e.URI]; !ok {
+			labels = append(labels, e.URI)
+			seen[e.URI] = struct{}{}
+			if len(labels) >= 10 {
+				break
+			}
+		}
+	}
 
-    values := map[string][]int{}
-    statusList := []string{}
-    for s := range statusSet {
-        statusStr := fmt.Sprintf("%d", s)
-        statusList = append(statusList, statusStr)
-        values[statusStr] = make([]int, len(labels)) 
-    }
+	values := map[string][]int{}
+	for status := range statusSet {
+		values[fmt.Sprintf("%d", status)] = make([]int, len(labels))
+	}
 
-    for _, e := range entries {
-        idx := -1
-        for i, uri := range labels {
-            if uri == e.URI {
-                idx = i
-                break
-            }
-        }
-        if idx == -1 {
-            continue 
-        }
-        values[fmt.Sprintf("%d", e.Status)][idx] = e.Count
-    }
+	for _, e := range entries {
+		idx := -1
+		for i, uri := range labels {
+			if uri == e.URI {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			continue
+		}
+		values[fmt.Sprintf("%d", e.Status)][idx] = e.Count
+	}
 
-    return labels, values, nil
+	return labels, values, nil
 }
-
-
 
 func (s *AnalyticsService) AvgRequestTime(minutes int, host string) ([]string, []float64, error) {
 	rows, err := db.DB.Query(`
@@ -166,9 +172,14 @@ func (s *AnalyticsService) AvgRequestTime(minutes int, host string) ([]string, [
 	for rows.Next() {
 		var l string
 		var v float64
-		rows.Scan(&l, &v)
+		if err := rows.Scan(&l, &v); err != nil {
+			return nil, nil, err
+		}
 		labels = append(labels, l)
 		values = append(values, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
 	return labels, values, nil
 }
@@ -188,17 +199,20 @@ func (s *AnalyticsService) Hosts() ([]string, error) {
 		}
 		hosts = append(hosts, h)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return hosts, nil
 }
 
 type IPReputation struct {
-	IP          string `json:"ip"`
-	Hostnames   []string `json:"hostnames"`
-	ISP         string `json:"isp"`
-	Score       int    `json:"score"`
-	Reports     int    `json:"reports"`
-	CheckedAt   string `json:"checked_at"`
-	Verdict     string `json:"verdict"`
+	IP        string   `json:"ip"`
+	Hostnames []string `json:"hostnames"`
+	ISP       string   `json:"isp"`
+	Score     int      `json:"score"`
+	Reports   int      `json:"reports"`
+	CheckedAt string   `json:"checked_at"`
+	Verdict   string   `json:"verdict"`
 }
 
 type IPGeoPoint struct {
@@ -311,7 +325,7 @@ func (s *AnalyticsService) IPReputationList(minutes int, host, filter string) ([
 		isp := ""
 		if _, _, _, _, _, cachedISP, ok := s.getCachedIPGeo(ip); ok {
 			isp = cachedISP
-		} else if lat, lon, city, region, country, fetchedISP, geoErr := fetchIPAPIGeo(ip); geoErr == nil {
+		} else if lat, lon, city, region, country, fetchedISP, geoErr := fetchIPWhoIsGeo(ip); geoErr == nil {
 			_ = s.saveIPGeo(ip, lat, lon, city, region, country, fetchedISP)
 			isp = fetchedISP
 		}
@@ -345,7 +359,7 @@ func (s *AnalyticsService) IPGeoPoints(minutes int, host string) ([]IPGeoPoint, 
 	for _, ip := range ips {
 		lat, lon, city, region, country, isp, ok := s.getCachedIPGeo(ip)
 		if !ok {
-			lat, lon, city, region, country, isp, err = fetchIPAPIGeo(ip)
+			lat, lon, city, region, country, isp, err = fetchIPWhoIsGeo(ip)
 			if err != nil {
 				continue
 			}
@@ -434,7 +448,7 @@ func (s *AnalyticsService) getCachedIPGeo(ip string) (float64, float64, string, 
 func (s *AnalyticsService) saveIPGeo(ip string, lat, lon float64, city, region, country, isp string) error {
 	_, err := db.DB.Exec(`
 		INSERT INTO ip_geolocation (ip, lat, lon, city, region, country, isp, checked_at, source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ip-api')
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ipwho.is')
 		ON DUPLICATE KEY UPDATE
 			lat = VALUES(lat),
 			lon = VALUES(lon),
@@ -490,18 +504,15 @@ func fetchAbuseIPDBScore(ip, apiKey string, maxAgeDays int) (int, int, error) {
 	return payload.Data.AbuseConfidenceScore, payload.Data.TotalReports, nil
 }
 
-func fetchIPAPIGeo(ip string) (float64, float64, string, string, string, string, error) {
+func fetchIPWhoIsGeo(ip string) (float64, float64, string, string, string, string, error) {
 	req, err := http.NewRequest(
 		http.MethodGet,
-		"http://ip-api.com/json/"+ip,
+		"https://ipwho.is/"+ip,
 		nil,
 	)
 	if err != nil {
 		return 0, 0, "", "", "", "", err
 	}
-	q := req.URL.Query()
-	q.Set("fields", "status,lat,lon,city,regionName,country,isp,message")
-	req.URL.RawQuery = q.Encode()
 
 	client := &http.Client{Timeout: 6 * time.Second}
 	resp, err := client.Do(req)
@@ -512,29 +523,31 @@ func fetchIPAPIGeo(ip string) (float64, float64, string, string, string, string,
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return 0, 0, "", "", "", "", fmt.Errorf("ip-api error: %s", string(body))
+		return 0, 0, "", "", "", "", fmt.Errorf("ipwho.is error: %s", string(body))
 	}
 
 	var payload struct {
-		Status     string  `json:"status"`
-		Lat        float64 `json:"lat"`
-		Lon        float64 `json:"lon"`
-		City       string  `json:"city"`
-		RegionName string  `json:"regionName"`
-		Country    string  `json:"country"`
-		ISP        string  `json:"isp"`
+		Success    bool    `json:"success"`
 		Message    string  `json:"message"`
+		Latitude   float64 `json:"latitude"`
+		Longitude  float64 `json:"longitude"`
+		City       string  `json:"city"`
+		Region     string  `json:"region"`
+		Country    string  `json:"country"`
+		Connection struct {
+			ISP string `json:"isp"`
+		} `json:"connection"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return 0, 0, "", "", "", "", err
 	}
-	if payload.Status != "success" {
+	if !payload.Success {
 		if payload.Message == "" {
 			payload.Message = "unknown error"
 		}
-		return 0, 0, "", "", "", "", fmt.Errorf("ip-api: %s", payload.Message)
+		return 0, 0, "", "", "", "", fmt.Errorf("ipwho.is: %s", payload.Message)
 	}
-	return payload.Lat, payload.Lon, payload.City, payload.RegionName, payload.Country, payload.ISP, nil
+	return payload.Latitude, payload.Longitude, payload.City, payload.Region, payload.Country, payload.Connection.ISP, nil
 }
 
 func verdictFromScore(score, threshold int) string {

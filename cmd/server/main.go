@@ -5,9 +5,11 @@ import (
 	"GoResolver/internal/db"
 	"GoResolver/internal/logging"
 	"GoResolver/internal/services"
+	"GoResolver/internal/session"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -15,8 +17,8 @@ import (
 	"github.com/miekg/dns"
 	"log"
 	"net"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +30,7 @@ type RecordWithTTL struct {
 type dnssecKeyMaterial struct {
 	Key    *dns.DNSKEY
 	Signer ed25519.PrivateKey
+	Source string
 }
 
 var dnssecCache struct {
@@ -35,48 +38,95 @@ var dnssecCache struct {
 	material *dnssecKeyMaterial
 }
 
+var schemaColumnCache struct {
+	mu     sync.RWMutex
+	values map[string]bool
+}
 
 func main() {
 	db.Init()
+	if err := session.Init(); err != nil {
+		log.Fatal(err)
+	}
 
 	if settingEnabled(appSettings.GetValue("dns.enabled"), true) {
-		go startDNSServer()
+		go func() {
+			if err := startDNSServer(); err != nil {
+				log.Printf("DNS server stopped: %v", err)
+			}
+		}()
 	} else {
 		log.Println("Built-in DNS server is disabled (dns.enabled=0)")
 	}
+
 	go logging.StartNginxLogIngester(
 		db.DB,
-		appSettings.GetValue("logging.nginx_access_json"),
+		strings.TrimSpace(appSettings.GetValue("logging.nginx_access_json")),
 	)
 	go services.NewServerConfigurationService().StartFail2BanEnforcer()
 
 	application := app.New()
-	application.Run()
+	if err := application.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 /* ================= DNS SERVER ================= */
 
-func startDNSServer() {
-	addr := net.UDPAddr{
-		Port: 53,
-		IP:   net.ParseIP("0.0.0.0"),
+func startDNSServer() error {
+	listeners := []struct {
+		network string
+		addr    *net.UDPAddr
+	}{
+		{
+			network: "udp4",
+			addr: &net.UDPAddr{
+				Port: 53,
+				IP:   net.IPv4zero,
+			},
+		},
+		{
+			network: "udp6",
+			addr: &net.UDPAddr{
+				Port: 53,
+				IP:   net.ParseIP("::"),
+			},
+		},
 	}
 
-	conn, err := net.ListenUDP("udp", &addr)
-	if err != nil {
-		log.Fatalf("DNS Server could not start: %v", err)
+	started := 0
+	for _, listener := range listeners {
+		conn, err := net.ListenUDP(listener.network, listener.addr)
+		if err != nil {
+			log.Printf("DNS server %s listener could not start on %s: %v", listener.network, listener.addr.String(), err)
+			continue
+		}
+		started++
+		log.Printf("DNS server running on %s...", conn.LocalAddr())
+		go serveDNS(conn)
 	}
+
+	if started == 0 {
+		return fmt.Errorf("dns server could not start on IPv4 or IPv6")
+	}
+
+	return nil
+}
+
+func serveDNS(conn *net.UDPConn) {
 	defer conn.Close()
-
-	log.Println("DNS server running on port 53...")
-
-	buf := make([]byte, 512)
+	buf := make([]byte, 1232)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Printf("DNS read failed on %s: %v", conn.LocalAddr(), err)
 			continue
 		}
-		go handleDNSQuery(conn, clientAddr, buf[:n])
+		packet := append([]byte(nil), buf[:n]...)
+		go handleDNSQuery(conn, clientAddr, packet)
 	}
 }
 
@@ -93,6 +143,8 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	q := req.Question[0]
 	qname := strings.TrimSuffix(strings.ToLower(q.Name), ".")
 	fqdn := dns.Fqdn(qname)
+	zone := findAuthoritativeZone(qname)
+	zoneFQDN := dns.Fqdn(zone)
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -108,7 +160,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	switch q.Qtype {
 
 	case dns.TypeA:
-		ip, ttl := querySingleRecord(qname, "A")
+		ip, ttl := querySingleRecord(zone, qname, "A")
 		if ip == "" {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -116,7 +168,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		addRR(msg, fmt.Sprintf("%s %d IN A %s", fqdn, ttl, ip))
 
 	case dns.TypeAAAA:
-		ip, ttl := querySingleRecord(qname, "AAAA")
+		ip, ttl := querySingleRecord(zone, qname, "AAAA")
 		if ip == "" {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -124,7 +176,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		addRR(msg, fmt.Sprintf("%s %d IN AAAA %s", fqdn, ttl, ip))
 
 	case dns.TypeCNAME:
-		target, ttl := querySingleRecord(qname, "CNAME")
+		target, ttl := querySingleRecord(zone, qname, "CNAME")
 		if target == "" {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -137,7 +189,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		))
 
 	case dns.TypeTXT:
-		txts := queryMultiRecords(qname, "TXT")
+		txts := queryMultiRecords(zone, qname, "TXT")
 		if len(txts) == 0 {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -152,7 +204,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		}
 
 	case dns.TypeMX:
-		mxs := queryMultiRecords(qname, "MX")
+		mxs := queryMultiRecords(zone, qname, "MX")
 		if len(mxs) == 0 {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -173,7 +225,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		}
 
 	case dns.TypeTLSA:
-		tlsaRecords := queryMultiRecords(qname, "TLSA")
+		tlsaRecords := queryMultiRecords(zone, qname, "TLSA")
 		if len(tlsaRecords) == 0 {
 			msg.Rcode = dns.RcodeNameError
 			break
@@ -188,6 +240,10 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		}
 
 	case dns.TypeNS:
+		if zone == "" {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
 		nsHosts := parseCSV(appSettings.GetValue("dns.ns_hosts"))
 		if len(nsHosts) == 0 {
 			msg.Rcode = dns.RcodeNameError
@@ -196,29 +252,38 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		for _, ns := range nsHosts {
 			addRR(msg, fmt.Sprintf(
 				"%s 3600 IN NS %s",
-				fqdn,
+				zoneFQDN,
 				ns,
 			))
 		}
 
 	case dns.TypeCAA:
+		if zone == "" {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
 		addRR(msg, fmt.Sprintf(
 			`%s 3600 IN CAA 0 issue "%s"`,
-			fqdn,
+			zoneFQDN,
 			appSettings.GetValue("dns.caa_issuer"),
 		))
 
 	case dns.TypeSOA:
+		if zone == "" {
+			msg.Rcode = dns.RcodeNameError
+			break
+		}
 		rname := appSettings.GetValue("dns.soa_rname_template")
 		if rname == "" {
 			rname = "hostmaster.{domain}"
 		}
-		rname = strings.ReplaceAll(rname, "{domain}", fqdn)
+		rname = strings.ReplaceAll(rname, "{domain}", zoneFQDN)
 		addRR(msg, fmt.Sprintf(
-			"%s 3600 IN SOA %s %s 1 3600 900 604800 86400",
-			fqdn,
+			"%s 3600 IN SOA %s %s %d 3600 900 604800 86400",
+			zoneFQDN,
 			appSettings.GetValue("dns.soa_mname"),
 			rname,
+			zoneSOASerial(zone),
 		))
 
 	case dns.TypeDNSKEY:
@@ -226,8 +291,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 			msg.Rcode = dns.RcodeNotImplemented
 			break
 		}
-		zone := findAuthoritativeZone(qname)
-		if zone == "" || fqdn != dns.Fqdn(zone) {
+		if zone == "" || fqdn != zoneFQDN {
 			msg.Rcode = dns.RcodeNameError
 			break
 		}
@@ -249,8 +313,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 			msg.Rcode = dns.RcodeNotImplemented
 			break
 		}
-		zone := findAuthoritativeZone(qname)
-		if zone == "" || fqdn != dns.Fqdn(zone) {
+		if zone == "" || fqdn != zoneFQDN {
 			msg.Rcode = dns.RcodeNameError
 			break
 		}
@@ -280,7 +343,6 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	if msg.Rcode == dns.RcodeSuccess && len(msg.Answer) > 0 &&
 		doBit && settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) &&
 		q.Qtype != dns.TypeDNSKEY && q.Qtype != dns.TypeDS && q.Qtype != dns.TypeRRSIG {
-		zone := findAuthoritativeZone(qname)
 		if zone != "" {
 			material, err := getOrCreateDNSSECKey()
 			if err != nil {
@@ -311,13 +373,23 @@ func addRR(msg *dns.Msg, rrStr string) {
 	msg.Answer = append(msg.Answer, rr)
 }
 
-func querySingleRecord(domain, rtype string) (string, uint32) {
+func querySingleRecord(zone, domain, rtype string) (string, uint32) {
+	if zone == "" {
+		return "", 0
+	}
+
 	var content string
 	var ttl uint32
 
 	err := db.DB.QueryRow(
-		"SELECT content, ttl FROM records WHERE name=? AND type=? LIMIT 1",
-		domain, rtype,
+		`SELECT r.content, r.ttl
+		FROM records r
+		INNER JOIN domains d ON d.id = r.domain_id
+		WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?
+		  AND TRIM(TRAILING '.' FROM LOWER(r.name)) = ?
+		  AND UPPER(r.type) = ?
+		LIMIT 1`,
+		zone, domain, rtype,
 	).Scan(&content, &ttl)
 
 	if err != nil {
@@ -326,10 +398,19 @@ func querySingleRecord(domain, rtype string) (string, uint32) {
 	return content, ttl
 }
 
-func queryMultiRecords(domain, rtype string) []RecordWithTTL {
+func queryMultiRecords(zone, domain, rtype string) []RecordWithTTL {
+	if zone == "" {
+		return nil
+	}
+
 	rows, err := db.DB.Query(
-		"SELECT content, ttl FROM records WHERE name=? AND type=?",
-		domain, rtype,
+		`SELECT r.content, r.ttl
+		FROM records r
+		INNER JOIN domains d ON d.id = r.domain_id
+		WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?
+		  AND TRIM(TRAILING '.' FROM LOWER(r.name)) = ?
+		  AND UPPER(r.type) = ?`,
+		zone, domain, rtype,
 	)
 	if err != nil {
 		return nil
@@ -343,6 +424,10 @@ func queryMultiRecords(domain, rtype string) []RecordWithTTL {
 			result = append(result, r)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Println("Record query failed:", err)
+		return nil
+	}
 	return result
 }
 
@@ -351,10 +436,11 @@ var appSettings = services.NewSettingsService()
 func findAuthoritativeZone(qname string) string {
 	var zone string
 	err := db.DB.QueryRow(`
-		SELECT name
+		SELECT TRIM(TRAILING '.' FROM LOWER(name))
 		FROM domains
-		WHERE ? = name OR ? LIKE CONCAT('%.', name)
-		ORDER BY LENGTH(name) DESC
+		WHERE ? = TRIM(TRAILING '.' FROM LOWER(name))
+		   OR ? LIKE CONCAT('%.', TRIM(TRAILING '.' FROM LOWER(name)))
+		ORDER BY LENGTH(TRIM(TRAILING '.' FROM LOWER(name))) DESC
 		LIMIT 1
 	`, qname, qname).Scan(&zone)
 	if err != nil {
@@ -367,12 +453,14 @@ func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
 	dnssecCache.mu.Lock()
 	defer dnssecCache.mu.Unlock()
 
-	if dnssecCache.material != nil {
+	pemValue := appSettings.GetValue("dns.dnssec_private_key_pem")
+	normalizedSource := normalizeDNSSECPrivateKeyValue(pemValue)
+
+	if dnssecCache.material != nil && dnssecCache.material.Source == normalizedSource {
 		return dnssecCache.material, nil
 	}
 
-	pemValue := appSettings.GetValue("dns.dnssec_private_key_pem")
-	if strings.TrimSpace(pemValue) == "" {
+	if strings.TrimSpace(normalizedSource) == "" {
 		_, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			return nil, err
@@ -390,9 +478,10 @@ func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
 		}); err != nil {
 			return nil, err
 		}
+		normalizedSource = normalizeDNSSECPrivateKeyValue(pemValue)
 	}
 
-	priv, err := parseDNSSECPrivateKey(pemValue)
+	priv, err := parseDNSSECPrivateKey(normalizedSource)
 	if err != nil {
 		return nil, err
 	}
@@ -414,18 +503,14 @@ func getOrCreateDNSSECKey() (*dnssecKeyMaterial, error) {
 	dnssecCache.material = &dnssecKeyMaterial{
 		Key:    key,
 		Signer: priv,
+		Source: normalizedSource,
 	}
 	return dnssecCache.material, nil
 }
 
 func parseDNSSECPrivateKey(raw string) (ed25519.PrivateKey, error) {
 	// Allow pasted values wrapped in quotes and with escaped newlines.
-	value := strings.TrimSpace(raw)
-	value = strings.Trim(value, `"'`)
-	if strings.Contains(value, `\n`) {
-		value = strings.ReplaceAll(value, `\n`, "\n")
-	}
-	value = normalizeCompactPrivateKeyPEM(value)
+	value := normalizeDNSSECPrivateKeyValue(raw)
 
 	// Preferred format: PKCS#8 PEM Ed25519 private key.
 	if block, _ := pem.Decode([]byte(value)); block != nil {
@@ -458,6 +543,15 @@ func parseDNSSECPrivateKey(raw string) (ed25519.PrivateKey, error) {
 	}
 
 	return nil, errors.New("invalid dns.dnssec_private_key_pem")
+}
+
+func normalizeDNSSECPrivateKeyValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	value = strings.Trim(value, `"'`)
+	if strings.Contains(value, `\n`) {
+		value = strings.ReplaceAll(value, `\n`, "\n")
+	}
+	return normalizeCompactPrivateKeyPEM(value)
 }
 
 func normalizeCompactPrivateKeyPEM(value string) string {
@@ -521,6 +615,102 @@ func signRRSet(rrset []dns.RR, key *dns.DNSKEY, signer ed25519.PrivateKey, signe
 		return nil
 	}
 	return sig
+}
+
+func zoneSOASerial(zone string) uint32 {
+	latest := time.Time{}
+
+	if dbHasColumn("domains", "created_at") {
+		var domainCreated sql.NullTime
+		err := db.DB.QueryRow(`
+			SELECT created_at
+			FROM domains
+			WHERE TRIM(TRAILING '.' FROM LOWER(name)) = ?
+			LIMIT 1
+		`, zone).Scan(&domainCreated)
+		if err != nil && err != sql.ErrNoRows {
+			log.Println("SOA serial domain lookup failed:", err)
+		}
+		if domainCreated.Valid {
+			latest = domainCreated.Time.UTC()
+		}
+	}
+
+	recordColumn := ""
+	switch {
+	case dbHasColumn("records", "updated_at"):
+		recordColumn = "updated_at"
+	case dbHasColumn("records", "created_at"):
+		recordColumn = "created_at"
+	}
+
+	if recordColumn != "" {
+		var recordUpdated sql.NullTime
+		query := fmt.Sprintf(`
+			SELECT MAX(r.%s)
+			FROM records r
+			INNER JOIN domains d ON d.id = r.domain_id
+			WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?
+		`, recordColumn)
+		err := db.DB.QueryRow(query, zone).Scan(&recordUpdated)
+		if err != nil {
+			log.Println("SOA serial record lookup failed:", err)
+		}
+		if recordUpdated.Valid && (latest.IsZero() || recordUpdated.Time.After(latest)) {
+			latest = recordUpdated.Time.UTC()
+		}
+	}
+
+	if latest.IsZero() {
+		return 1
+	}
+
+	return soaSerialFromUnix(latest.Unix())
+}
+
+func dbHasColumn(table, column string) bool {
+	key := table + "." + column
+
+	schemaColumnCache.mu.RLock()
+	if schemaColumnCache.values != nil {
+		if exists, ok := schemaColumnCache.values[key]; ok {
+			schemaColumnCache.mu.RUnlock()
+			return exists
+		}
+	}
+	schemaColumnCache.mu.RUnlock()
+
+	var count int
+	err := db.DB.QueryRow(`
+		SELECT COUNT(*)
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		  AND table_name = ?
+		  AND column_name = ?
+	`, table, column).Scan(&count)
+	if err != nil {
+		log.Printf("SOA serial schema lookup failed for %s.%s: %v", table, column, err)
+		return false
+	}
+
+	exists := count > 0
+	schemaColumnCache.mu.Lock()
+	if schemaColumnCache.values == nil {
+		schemaColumnCache.values = map[string]bool{}
+	}
+	schemaColumnCache.values[key] = exists
+	schemaColumnCache.mu.Unlock()
+	return exists
+}
+
+func soaSerialFromUnix(serial int64) uint32 {
+	if serial < 1 {
+		serial = 1
+	}
+	if serial > int64(^uint32(0)) {
+		serial = int64(^uint32(0))
+	}
+	return uint32(serial)
 }
 
 func settingEnabled(raw string, defaultValue bool) bool {

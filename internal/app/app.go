@@ -1,6 +1,5 @@
 package app
 
-
 import (
 	"log"
 	"net/http"
@@ -9,11 +8,9 @@ import (
 	"GoResolver/internal/services"
 )
 
-
 type App struct {
 	Router http.Handler
 }
-
 
 func New() *App {
 	a := &App{}
@@ -22,8 +19,7 @@ func New() *App {
 	return a
 }
 
-
-func (a *App) Run() {
+func (a *App) Run() error {
 	settings := services.NewSettingsService()
 	baseURL := settings.GetValue("app.base_url")
 	listenAddr := settings.GetValue("app.listen_addr")
@@ -38,5 +34,5 @@ func (a *App) Run() {
 		}
 	}
 	log.Println("Server running on", baseURL)
-	http.ListenAndServe(listenAddr, a.Router)
+	return http.ListenAndServe(listenAddr, a.Router)
 }

@@ -33,7 +33,7 @@ func (h *LoginHandler) Index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := session.Store.Get(r, "session")
+	sess, err := session.Get(r, "session")
 	if err != nil {
 		http.Error(w, "Session error", http.StatusInternalServerError)
 		return
@@ -41,14 +41,24 @@ func (h *LoginHandler) Index(w http.ResponseWriter, r *http.Request) {
 
 	sess.Values["authenticated"] = true
 	sess.Values["userid"] = auth.UserID
-	_ = sess.Save(r, w)
+	if err := sess.Save(r, w); err != nil {
+		http.Error(w, "Session save error", http.StatusInternalServerError)
+		return
+	}
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (h *LoginHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	sess, _ := session.Store.Get(r, "session")
+	sess, err := session.Get(r, "session")
+	if err != nil {
+		http.Error(w, "Session error", http.StatusInternalServerError)
+		return
+	}
 	sess.Options.MaxAge = -1
-	_ = sess.Save(r, w)
+	if err := sess.Save(r, w); err != nil {
+		http.Error(w, "Session save error", http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }

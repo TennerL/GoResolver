@@ -95,6 +95,26 @@ body::before {
   font-size: 0.82rem;
 }
 
+.settings-toolbar-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.settings-search-input {
+  flex: 1 1 22rem;
+}
+
+.settings-toolbar-meta,
+.settings-group-header {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
 @keyframes fade-rise {
   from {
     opacity: 0;

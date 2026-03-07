@@ -2,6 +2,7 @@ package web
 
 import "embed"
 
-// Embed the full static tree so nested build output like static/dist/app.js is available.
-//go:embed static
+// Embed both the built static assets and the HTML shell used to mount the SPA.
+//
+//go:embed static templates
 var StaticFS embed.FS

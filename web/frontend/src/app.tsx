@@ -98,7 +98,7 @@ function ShellLayout({ page, routeKey, children }) {
 
   return <AppShell header={{ height: 78 }} navbar={{ width: 290, breakpoint: "sm", collapsed: { mobile: !opened } }} padding="md">
     <AppShell.Header className="shell-panel"><Group h="100%" px="md" justify="space-between"><Group gap="sm"><Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" /><Box><Text fw={800} size="lg">GoResolver</Text><Text size="xs" c="dimmed">{pageTitles[page.View] || "GoResolver"}</Text></Box></Group><Button component="a" href="/logout" data-spa-ignore="true" variant="light" color="gray">Logout</Button></Group></AppShell.Header>
-    <AppShell.Navbar p="md" className="shell-panel"><Paper radius="xl" p="lg" className="hero-panel"><Stack gap={4}><Text size="xs" tt="uppercase" fw={700} c="dimmed">Control Plane</Text><Text fw={800} size="xl">Go API, React frontend.</Text><Text size="sm" c="dimmed">Navigation and form submissions stay inside the app shell.</Text></Stack></Paper><Stack mt="xl" gap="xs">{navItems.map((item) => { const Icon = item.icon; const isActive = active === item.active; return <Button key={item.href} component="a" href={item.href} justify="flex-start" variant={isActive ? "light" : "subtle"} color={isActive ? "red" : "gray"} leftSection={<Icon size={16} />} onClick={close}>{item.label}</Button>; })}</Stack></AppShell.Navbar>
+    <AppShell.Navbar p="md" className="shell-panel"><Stack mt="xl" gap="xs">{navItems.map((item) => { const Icon = item.icon; const isActive = active === item.active; return <Button key={item.href} component="a" href={item.href} justify="flex-start" variant={isActive ? "light" : "subtle"} color={isActive ? "red" : "gray"} leftSection={<Icon size={16} />} onClick={close}>{item.label}</Button>; })}</Stack></AppShell.Navbar>
     <AppShell.Main><Box className="page-surface"><ErrorBoundary key={routeKey}>{children}</ErrorBoundary></Box></AppShell.Main>
   </AppShell>;
 }
@@ -183,6 +183,19 @@ export function App() {
     setRefreshToken((value) => value + 1);
   }, [route.key]);
 
+  const invalidateRouteCache = React.useCallback((pathname, search = "") => {
+    const key = resolveRoute(pathname, search).key;
+    if (!key) return;
+    setPageCache((current) => {
+      if (!(key in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
   const handleMutationResponse = React.useCallback(async (response) => {
     if (response.status === 401) {
       window.location.assign("/login");
@@ -204,13 +217,14 @@ export function App() {
       if (sameLocation(redirected, window.location.pathname, window.location.search)) {
         refresh();
       } else {
+        invalidateRouteCache(redirected.pathname, redirected.search);
         navigate(redirected.pathname, redirected.search);
       }
       return;
     }
 
     refresh();
-  }, [navigate, refresh]);
+  }, [invalidateRouteCache, navigate, refresh]);
 
   React.useEffect(() => {
     const handlePopState = () => {
@@ -264,13 +278,30 @@ export function App() {
         return;
       }
 
-      const submitter = event.submitter instanceof HTMLElement ? event.submitter : undefined;
-      const formData = submitter ? new FormData(form, submitter) : new FormData(form);
+      const submitter = event.submitter;
+      const formData = new FormData(form);
+      if ((submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) && submitter.name) {
+        formData.append(submitter.name, submitter.value);
+      }
 
-      void fetch(url.toString(), {
-        method,
-        body: formData
-      }).then(handleMutationResponse).catch((error) => {
+      const hasBinaryField = Array.from(formData.values()).some((value) => value instanceof File && value.name !== "");
+      const requestInit = hasBinaryField
+        ? { method, body: formData }
+        : {
+            method,
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body: (() => {
+              const params = new URLSearchParams();
+              for (const [key, value] of formData.entries()) {
+                if (typeof value === "string") {
+                  params.append(key, value);
+                }
+              }
+              return params;
+            })()
+          };
+
+      void fetch(url.toString(), requestInit).then(handleMutationResponse).catch((error) => {
         window.alert(error instanceof Error ? error.message : "Request failed");
       });
     };

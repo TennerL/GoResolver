@@ -3,6 +3,8 @@ package handlers
 import (
 	"html/template"
 	"net/http"
+
+	"GoResolver/web"
 )
 
 type FrontendHandler struct {
@@ -11,7 +13,7 @@ type FrontendHandler struct {
 
 func NewFrontendHandler() *FrontendHandler {
 	return &FrontendHandler{
-		Tmpl: template.Must(template.ParseFiles("web/templates/app.html")),
+		Tmpl: template.Must(template.ParseFS(web.StaticFS, "templates/app.html")),
 	}
 }
 

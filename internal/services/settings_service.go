@@ -4,22 +4,24 @@ import (
 	"GoResolver/internal/db"
 	"GoResolver/internal/models"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"github.com/miekg/dns"
 	"log"
 	"strings"
 )
 
 type SettingDefinition struct {
-	Key     string
-	Label   string
-	Group   string
-	Help    string
-	Default string
+	Key      string
+	Label    string
+	Group    string
+	Help     string
+	Default  string
 	ReadOnly bool
 }
 
@@ -37,6 +39,7 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "dns.dnssec_enabled", Label: "DNSSEC enabled", Group: "DNS", Help: "Enable DNSSEC signing and DNSKEY/DS responses", Default: "0"},
 	{Key: "dns.dnssec_private_key_pem", Label: "DNSSEC private key PEM", Group: "DNS", Help: "PKCS#8 Ed25519 private key used for DNSSEC signing", Default: ""},
 	{Key: "dns.dnssec_public_key", Label: "DNSSEC public key", Group: "DNS", Help: "Derived from private key. Copy/paste for DNSKEY workflows", Default: "", ReadOnly: true},
+	{Key: "dns.dnssec_registrar_values", Label: "DNSSEC registrar values", Group: "DNS", Help: "Registrar-ready DS values for each managed zone", Default: "", ReadOnly: true},
 	{Key: "dns.dnssec_public_key_json", Label: "DNSSEC public key JSON", Group: "DNS", Help: "Derived JSON payload for external integrations", Default: "", ReadOnly: true},
 	{Key: "dns.ns_hosts", Label: "Authoritative NS hosts", Group: "DNS", Help: "Comma-separated list of NS hostnames", Default: "ns1.nsstatic.org.,ns2.nsstatic.org."},
 	{Key: "dns.primary_ns", Label: "Primary NS hostname", Group: "DNS", Help: "Used for NS status check", Default: "ns1.nsstatic.org"},
@@ -69,6 +72,7 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "abuseipdb.max_age_days", Label: "AbuseIPDB max age days", Group: "Security", Help: "Max age of reports when querying AbuseIPDB", Default: "90"},
 	{Key: "abuseipdb.cache_ttl_hours", Label: "AbuseIPDB cache TTL (hours)", Group: "Security", Help: "How long to cache reputation lookups", Default: "24"},
 	{Key: "security.fail2ban_interval_seconds", Label: "Fail2Ban interval (seconds)", Group: "Security", Help: "How often Fail2Ban scans logs", Default: "30"},
+	{Key: "nginx.default_deny_enabled", Label: "Default deny site", Group: "Nginx", Help: "Enable the fallback default_server that blocks unmatched hosts while keeping ACME challenge handling available", Default: "1"},
 	{Key: "nginx.transparent_proxy", Label: "Nginx transparent proxy", Group: "Nginx", Help: "Enable proxy_bind transparent to preserve client IP (requires OS routing setup)", Default: "0"},
 }
 
@@ -151,6 +155,11 @@ func (s *SettingsService) SetMany(values map[string]string) error {
 		return err
 	}
 
+	prepared, err := prepareSettingsValuesForSave(s.GetAllWithDefaults(), values)
+	if err != nil {
+		return err
+	}
+
 	tx, err := db.DB.Begin()
 	if err != nil {
 		return err
@@ -167,7 +176,7 @@ func (s *SettingsService) SetMany(values map[string]string) error {
 	}
 	defer stmt.Close()
 
-	for key, value := range values {
+	for key, value := range prepared {
 		if _, err := stmt.Exec(key, value); err != nil {
 			tx.Rollback()
 			return err
@@ -180,10 +189,13 @@ func (s *SettingsService) SetMany(values map[string]string) error {
 func (s *SettingsService) EditableSettings() []models.SettingItem {
 	values := s.GetAllWithDefaults()
 	if derived, err := deriveDNSSECPublicKey(values["dns.dnssec_private_key_pem"]); err == nil {
+		zones := s.dnssecDomainNames()
 		values["dns.dnssec_public_key"] = derived
-		values["dns.dnssec_public_key_json"] = buildDNSSECPublicKeyJSON(derived)
+		values["dns.dnssec_registrar_values"] = buildDNSSECRegistrarValues(derived, zones)
+		values["dns.dnssec_public_key_json"] = buildDNSSECPublicKeyJSON(derived, zones)
 	} else {
 		values["dns.dnssec_public_key"] = ""
+		values["dns.dnssec_registrar_values"] = ""
 		values["dns.dnssec_public_key_json"] = ""
 	}
 
@@ -210,10 +222,175 @@ func deriveDNSSECPublicKey(rawPrivate string) (string, error) {
 	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
-func buildDNSSECPublicKeyJSON(publicKey string) string {
-	key := dns.DNSKEY{
+func prepareSettingsValuesForSave(current, updates map[string]string) (map[string]string, error) {
+	prepared := make(map[string]string, len(updates)+1)
+	effective := make(map[string]string, len(current)+len(updates))
+	for key, value := range current {
+		effective[key] = value
+	}
+	for key, value := range updates {
+		prepared[key] = value
+		effective[key] = value
+	}
+
+	if settingEnabledForSettings(effective["dns.dnssec_enabled"], false) &&
+		strings.TrimSpace(effective["dns.dnssec_private_key_pem"]) == "" {
+		privateKeyPEM, err := generateDNSSECPrivateKeyPEM()
+		if err != nil {
+			return nil, err
+		}
+		prepared["dns.dnssec_private_key_pem"] = privateKeyPEM
+	}
+
+	return prepared, nil
+}
+
+func generateDNSSECPrivateKeyPEM() (string, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: der,
+	})), nil
+}
+
+func buildDNSSECPublicKeyJSON(publicKey string, zones []string) string {
+	domains := make([]map[string]any, 0, len(zones))
+	for _, zone := range zones {
+		payload := buildDNSSECDomainJSON(zone, publicKey)
+		if len(payload) == 0 {
+			continue
+		}
+		domains = append(domains, payload)
+	}
+
+	payload := map[string]any{
+		"domains": domains,
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func buildDNSSECRegistrarValues(publicKey string, zones []string) string {
+	sections := make([]string, 0, len(zones))
+	for _, zone := range zones {
+		key := dnssecDNSKEYForZone(zone, publicKey)
+		if key == nil {
+			continue
+		}
+
+		lines := []string{
+			fmt.Sprintf("Zone: %s", strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")),
+			fmt.Sprintf("Key Tag: %d", key.KeyTag()),
+			fmt.Sprintf("Flags: %d", key.Flags),
+			fmt.Sprintf("Protocol: %d", key.Protocol),
+			fmt.Sprintf("Algorithm: %d (%s)", key.Algorithm, dnssecAlgorithmName(key.Algorithm)),
+			fmt.Sprintf("Public Key: %s", key.PublicKey),
+		}
+
+		for _, digestType := range []uint8{dns.SHA256, dns.SHA384} {
+			ds := key.ToDS(digestType)
+			if ds == nil {
+				continue
+			}
+			lines = append(lines,
+				fmt.Sprintf("Digest Type %d (%s): %s", ds.DigestType, dnssecDigestTypeName(ds.DigestType), ds.Digest),
+				fmt.Sprintf("DS Record %s: %s", dnssecDigestTypeName(ds.DigestType), ds.String()),
+			)
+		}
+
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+
+	return strings.Join(sections, "\n\n")
+}
+
+func buildDNSSECDomainJSON(zone, publicKey string) map[string]any {
+	key := dnssecDNSKEYForZone(zone, publicKey)
+	if key == nil {
+		return nil
+	}
+
+	dsData := make([]map[string]any, 0, 2)
+	for _, digestType := range []uint8{dns.SHA256, dns.SHA384} {
+		ds := key.ToDS(digestType)
+		if ds == nil {
+			continue
+		}
+		dsData = append(dsData, map[string]any{
+			"keyTag":     key.KeyTag(),
+			"alg":        int(dns.ED25519),
+			"digestType": int(digestType),
+			"digest":     ds.Digest,
+			"keyData": map[string]any{
+				"flags":    257,
+				"protocol": 3,
+				"alg":      int(dns.ED25519),
+				"pubKey":   publicKey,
+			},
+		})
+	}
+
+	return map[string]any{
+		"name": strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), "."),
+		"extensions": map[string]any{
+			"secDns": map[string]any{
+				"dsData": dsData,
+			},
+		},
+	}
+}
+
+func (s *SettingsService) dnssecDomainNames() []string {
+	rows, err := db.DB.Query(`SELECT name FROM domains ORDER BY name`)
+	if err != nil {
+		log.Println("dnssec domain lookup failed:", err)
+		return nil
+	}
+	defer rows.Close()
+
+	seen := map[string]struct{}{}
+	zones := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			log.Println("dnssec domain scan failed:", err)
+			continue
+		}
+		zone := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if zone == "" {
+			continue
+		}
+		if _, ok := seen[zone]; ok {
+			continue
+		}
+		seen[zone] = struct{}{}
+		zones = append(zones, zone)
+	}
+	if err := rows.Err(); err != nil {
+		log.Println("dnssec domain rows failed:", err)
+	}
+	return zones
+}
+
+func dnssecDNSKEYForZone(zone, publicKey string) *dns.DNSKEY {
+	normalizedZone := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
+	if normalizedZone == "" || strings.TrimSpace(publicKey) == "" {
+		return nil
+	}
+
+	return &dns.DNSKEY{
 		Hdr: dns.RR_Header{
-			Name:   ".",
+			Name:   dns.Fqdn(normalizedZone),
 			Rrtype: dns.TypeDNSKEY,
 			Class:  dns.ClassINET,
 			Ttl:    3600,
@@ -223,32 +400,39 @@ func buildDNSSECPublicKeyJSON(publicKey string) string {
 		Algorithm: dns.ED25519,
 		PublicKey: publicKey,
 	}
+}
 
-	payload := map[string]any{
-		"extensions": map[string]any{
-			"secDns": map[string]any{
-				"dsData": []map[string]any{
-					{
-						"keyTag":     key.KeyTag(),
-						"alg":        int(dns.ED25519),
-						"digestType": 2,
-						"digest":     "",
-						"keyData": map[string]any{
-							"flags":    257,
-							"protocol": 3,
-							"alg":      int(dns.ED25519),
-							"pubKey":   publicKey,
-						},
-					},
-				},
-			},
-		},
+func dnssecAlgorithmName(algorithm uint8) string {
+	if name, ok := dns.AlgorithmToString[algorithm]; ok && name != "" {
+		return name
 	}
-	b, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return ""
+	return "Unknown"
+}
+
+func dnssecDigestTypeName(digestType uint8) string {
+	switch digestType {
+	case dns.SHA256:
+		return "SHA-256"
+	case dns.SHA384:
+		return "SHA-384"
+	default:
+		return "Unknown"
 	}
-	return string(b)
+}
+
+func settingEnabledForSettings(raw string, defaultValue bool) bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return defaultValue
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }
 
 func parseDNSSECPrivateKeyForSettings(raw string) (ed25519.PrivateKey, error) {

@@ -2,13 +2,13 @@ package logging
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"os"
-	"io"
-	"fmt"
-	"bytes"
 	"time"
 )
 
@@ -30,14 +30,22 @@ type NginxLog struct {
 
 func StartNginxLogIngester(db *sql.DB, path string) {
 	ensureNginxLogsSchema(db)
+	if path == "" {
+		log.Println("nginx log ingester disabled: log path is empty")
+		return
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("cannot open nginx log file: %v", err)
+		log.Printf("nginx log ingester disabled: cannot open %q: %v", path, err)
+		return
 	}
 	defer file.Close()
 
-	//file.Seek(0, io.SeekStart)
-	file.Seek(0, io.SeekEnd)
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		log.Printf("nginx log ingester disabled: cannot seek %q: %v", path, err)
+		return
+	}
 
 	reader := bufio.NewReader(file)
 	batch := make([]NginxLog, 0, 100)
@@ -49,7 +57,6 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 		select {
 		case <-flushTicker.C:
 			if len(batch) > 0 {
-				//log.Printf("flushing %d logs\n", len(batch))
 				insertBatch(db, batch)
 				batch = batch[:0]
 			}
@@ -95,13 +102,10 @@ func StartNginxLogIngester(db *sql.DB, path string) {
 
 			batch = append(batch, entry)
 
-
 			if len(batch) >= 100 {
-				//log.Printf("batch size reached: %d\n", len(batch))
 				insertBatch(db, batch)
 				batch = batch[:0]
 			}
-
 		}
 	}
 }
@@ -145,13 +149,14 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 	}
 
 	stmt, err := tx.Prepare(
-    "INSERT INTO nginx_logs " +
-    "(`time`, remote_addr, x_forwarded_for, method, uri, status, bytes, " +
-    "referer, user_agent, request_time, upstream_time, host, ray_id) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		"INSERT INTO nginx_logs " +
+			"(`time`, remote_addr, x_forwarded_for, method, uri, status, bytes, " +
+			"referer, user_agent, request_time, upstream_time, host, ray_id) " +
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	)
 	if err != nil {
 		log.Println("prepare error:", err)
-		tx.Rollback()
+		_ = tx.Rollback()
 		return
 	}
 	defer stmt.Close()
@@ -189,7 +194,7 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 		)
 		if err != nil {
 			log.Printf("insert error: %v | entry: %+v\n", err, e)
-		} 
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -201,7 +206,7 @@ func parseNginxTime(ts string) (time.Time, error) {
 	layouts := []string{
 		time.RFC3339,
 		"2006-01-02T15:04:05-07:00",
-		"02/Jan/2006:15:04:05 -0700", 
+		"02/Jan/2006:15:04:05 -0700",
 	}
 
 	for _, l := range layouts {

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS records (
     ttl INT NOT NULL DEFAULT 3600,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_records_domain
+        FOREIGN KEY (domain_id) REFERENCES domains(id)
+        ON DELETE CASCADE,
     INDEX idx_records_domain (domain_id),
     INDEX idx_records_name_type (name, type)
 );

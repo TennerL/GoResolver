@@ -2,6 +2,7 @@ package app
 
 import (
 	"io/fs"
+	"log"
 	"net/http"
 
 	"GoResolver/internal/handlers"
@@ -62,7 +63,8 @@ func NewRouter() http.Handler {
 
 	static, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
-		panic(err)
+		log.Printf("static asset filesystem unavailable: %v", err)
+		return r
 	}
 
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.FS(static))))

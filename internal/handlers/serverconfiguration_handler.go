@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,20 +43,206 @@ func NewServerConfigurationHandler() *ServerConfigurationHandler {
 	}
 }
 
+func canonicalServerConfigurationAction(raw string) string {
+	switch normalizeServerConfigurationAction(raw) {
+	case "update":
+		return "update"
+	case "delete":
+		return "delete"
+	case "issue_cert", "issuecert":
+		return "issue_cert"
+	case "renew_cert", "renewcert":
+		return "renew_cert"
+	case "delete_cert", "deletecert":
+		return "delete_cert"
+	case "delete_error_page", "deleteerrorpage":
+		return "delete_error_page"
+	case "delete_error_file", "deleteerrorfile":
+		return "delete_error_file"
+	case "add_rule", "addrule":
+		return "add_rule"
+	case "delete_rule", "deleterule":
+		return "delete_rule"
+	case "create_vpn_file", "createvpnfile":
+		return "create-vpn-file"
+	case "unban_fail2ban", "unbanfail2ban":
+		return "unban_fail2ban"
+	default:
+		return ""
+	}
+}
+
+func normalizeServerConfigurationAction(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	raw = strings.ReplaceAll(raw, "-", "_")
+	raw = strings.ReplaceAll(raw, " ", "_")
+	return raw
+}
+
+func inferServerConfigurationAction(r *http.Request) string {
+	switch {
+	case hasFormValue(r.Form, "fail2ban_ip"):
+		return "unban_fail2ban"
+	case hasFormValue(r.Form, "table") && hasFormValue(r.Form, "chain") && hasFormValue(r.Form, "comment"):
+		return "delete_rule"
+	case hasAnyFormValue(r.Form, "rule_type", "rule_table", "rule_chain", "rule_action", "source_ip", "dest_ip"):
+		return "add_rule"
+	case hasFormValue(r.Form, "id") && hasAnyFormValue(r.Form, "Filename", "Path"):
+		return "delete_error_file"
+	case hasFormValue(r.Form, "pass") && hasFormValue(r.Form, "vpn_ip"):
+		return "create-vpn-file"
+	}
+
+	switch strings.TrimSpace(r.FormValue("active_tab")) {
+	case "tab3":
+		if hasFormValue(r.Form, "id") && hasFormValue(r.Form, "serverName") {
+			return "delete"
+		}
+	case "tab4":
+		if hasFormValue(r.Form, "id") && hasFormValue(r.Form, "serverName") {
+			return "issue_cert"
+		}
+	case "tab5":
+		if hasFormValue(r.Form, "id") {
+			if hasAnyFormValue(r.Form, "Filename", "Path") {
+				return "delete_error_file"
+			}
+			return "delete_error_page"
+		}
+	case "tab6":
+		if hasFormValue(r.Form, "table") && hasFormValue(r.Form, "chain") && hasFormValue(r.Form, "comment") {
+			return "delete_rule"
+		}
+		if hasAnyFormValue(r.Form, "rule_type", "rule_table", "rule_chain", "rule_action", "source_ip", "dest_ip") {
+			return "add_rule"
+		}
+	case "tab8":
+		if hasFormValue(r.Form, "fail2ban_ip") {
+			return "unban_fail2ban"
+		}
+	}
+
+	if looksLikeServerConfigurationUpdate(r.Form) {
+		return "update"
+	}
+
+	return ""
+}
+
+func resolveServerConfigurationAction(r *http.Request) string {
+	if action := canonicalServerConfigurationAction(r.FormValue("action_type")); action != "" {
+		return action
+	}
+	return inferServerConfigurationAction(r)
+}
+
+func hasFormValue(values url.Values, key string) bool {
+	for _, value := range values[key] {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyFormValue(values url.Values, keys ...string) bool {
+	for _, key := range keys {
+		if hasFormValue(values, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFormKey(values url.Values, key string) bool {
+	_, ok := values[key]
+	return ok
+}
+
+func looksLikeServerConfigurationUpdate(values url.Values) bool {
+	updateKeys := []string{
+		"top_server_name",
+		"vpn_ip",
+		"vpn_file",
+		"id[]",
+		"server_name[]",
+		"server_port[]",
+		"ssl_enabled[]",
+		"ssl_redirect[]",
+		"hsts[]",
+		"proxy_pass_port[]",
+		"proxy_intercept_errors[]",
+		"Websockets[]",
+		"error_page_id[]",
+		"site_id[]",
+		"error_file_id[]",
+		"enabled[]",
+		"error_page_file_id[]",
+		"error_code[]",
+		"response_type[]",
+		"ddos_enabled",
+		"ddos_mode",
+		"ddos_preset",
+		"ddos_rate_limit",
+		"ddos_burst",
+		"ddos_conn_limit",
+		"ddos_syn_rate",
+		"ddos_syn_burst",
+		"ddos_challenge_delay",
+		"ddos_cookie_ttl",
+		"ddos_whitelist",
+		"fail2ban_enabled",
+		"fail2ban_max_retry",
+		"fail2ban_find_time",
+		"fail2ban_ban_time",
+		"fail2ban_status_codes",
+		"fail2ban_ignore_ips",
+		"fail2ban_use_xff",
+		"fail2ban_ban_globally",
+	}
+
+	for _, key := range updateKeys {
+		if hasFormKey(values, key) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sortedFormKeys(values url.Values) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func parseServerConfigurationForm(r *http.Request) error {
+	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		return r.ParseMultipartForm(32 << 20)
+	}
+	return r.ParseForm()
+}
+
 func (h *ServerConfigurationHandler) HandlePost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
+	if err := parseServerConfigurationForm(r); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
 
-	action := r.FormValue("action_type")
-
-	log.Println(action)
+	action := resolveServerConfigurationAction(r)
+	log.Printf("server configuration action=%q raw_action=%q keys=%v", action, r.FormValue("action_type"), sortedFormKeys(r.Form))
+	if len(r.Form) == 0 {
+		log.Printf("server configuration empty form method=%s content_type=%q content_length=%d referer=%q user_agent=%q", r.Method, r.Header.Get("Content-Type"), r.ContentLength, r.Referer(), r.UserAgent())
+	}
 
 	switch action {
 	case "update":
@@ -89,7 +276,7 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	serverID := mux.Vars(r)["id"]
 	tab := r.FormValue("active_tab")
 
-	if err := r.ParseForm(); err != nil {
+	if err := parseServerConfigurationForm(r); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
@@ -288,14 +475,17 @@ func (h *ServerConfigurationHandler) UploadErrorPage(w http.ResponseWriter, r *h
 	path := settings.GetValue("paths.error_pages")
 
 	ef := models.ServerErrorFiles{
-		Error_Code:  r.FormValue("error_code"),
+		Error_Code:   r.FormValue("error_code"),
 		ResponseType: r.FormValue("response_type"),
-		Filename:    header.Filename,
-		File:        data,
-		Path: 		 path,
+		Filename:     header.Filename,
+		File:         data,
+		Path:         path,
 	}
 
-	h.Service.UploadErrorPage(ef)
+	if err := h.Service.UploadErrorPage(ef); err != nil {
+		http.Error(w, "Upload failed", http.StatusBadRequest)
+		return
+	}
 	http.Redirect(w, r, r.Referer(), http.StatusSeeOther)
 }
 
@@ -356,9 +546,9 @@ func (h *ServerConfigurationHandler) DeleteErrorFile(w http.ResponseWriter, r *h
 	id := r.FormValue("id")
 
 	ef := models.ServerErrorFiles{
-		ID:			 id,
-		Filename:    r.FormValue("Filename"),
-		Path:		 r.FormValue("Path"),
+		ID:       id,
+		Filename: r.FormValue("Filename"),
+		Path:     r.FormValue("Path"),
 	}
 
 	err := h.Service.DeleteErrorFile(ef)
@@ -375,7 +565,7 @@ func (h *ServerConfigurationHandler) IssueCert(w http.ResponseWriter, r *http.Re
 	serverID := mux.Vars(r)["id"]
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusBadRequest)
-		return 
+		return
 	}
 	serverName := r.FormValue("serverName")
 	id := r.FormValue("id")
@@ -391,7 +581,7 @@ func (h *ServerConfigurationHandler) IssueCert(w http.ResponseWriter, r *http.Re
 	redirectWithTab(w, r, serverID, tab)
 }
 
-func (h *ServerConfigurationHandler) RenewCert(w http.ResponseWriter, r *http.Request){
+func (h *ServerConfigurationHandler) RenewCert(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
 
 	id := r.FormValue("id")
@@ -407,11 +597,11 @@ func (h *ServerConfigurationHandler) RenewCert(w http.ResponseWriter, r *http.Re
 	redirectWithTab(w, r, serverID, tab)
 }
 
-func (h *ServerConfigurationHandler) DeleteCert(w http.ResponseWriter, r *http.Request){
+func (h *ServerConfigurationHandler) DeleteCert(w http.ResponseWriter, r *http.Request) {
 	serverID := mux.Vars(r)["id"]
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusBadRequest)
-		return 
+		return
 	}
 	id := r.FormValue("id")
 
@@ -443,20 +633,20 @@ func (h *ServerConfigurationHandler) DeleteErrorPage(w http.ResponseWriter, r *h
 }
 
 func FilterRulesForServer(rules []models.IPTablesRule, serverID string, serverIPs ...string) []models.IPTablesRule {
-    var filtered []models.IPTablesRule
+	var filtered []models.IPTablesRule
 
-    ipSet := make(map[string]bool)
-    for _, ip := range serverIPs {
-        ipSet[ip] = true
-    }
+	ipSet := make(map[string]bool)
+	for _, ip := range serverIPs {
+		ipSet[ip] = true
+	}
 
-    for _, r := range rules {
-        if ipSet[r.Source] || ipSet[r.Destination] || isServerRule(r.Extra, serverID) || isGeneralGoResolverRule(r.Extra) {
-            filtered = append(filtered, r)
-        }
-    }
+	for _, r := range rules {
+		if ipSet[r.Source] || ipSet[r.Destination] || isServerRule(r.Extra, serverID) || isGeneralGoResolverRule(r.Extra) {
+			filtered = append(filtered, r)
+		}
+	}
 
-    return filtered
+	return filtered
 }
 
 func isServerRule(comment, serverID string) bool {
@@ -494,9 +684,8 @@ func isGeneralGoResolverRule(comment string) bool {
 	return true
 }
 
-
 func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
+	if err := parseServerConfigurationForm(r); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
@@ -509,24 +698,24 @@ func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Requ
 	position, _ := strconv.Atoi(r.FormValue("rule_position"))
 
 	spec := models.IPTablesRuleSpec{
-		Table:       r.FormValue("rule_table"),
-		Chain:       r.FormValue("rule_chain"),
-		Action:      r.FormValue("rule_action"),
-		Position:    position,
-		Protocol:    r.FormValue("protocol"),
-		InInterface: r.FormValue("in_interface"),
-		OutInterface:r.FormValue("out_interface"),
-		SourceIP:    r.FormValue("source_ip"),
-		DestIP:      r.FormValue("dest_ip"),
-		SourcePort:  sourcePort,
-		DestPort:    port,
-		ConnState:   r.FormValue("conn_state"),
-		IcmpType:    r.FormValue("icmp_type"),
-		Target:      r.FormValue("target"),
-		LogPrefix:   r.FormValue("log_prefix"),
-		LogLevel:    r.FormValue("log_level"),
-		RejectWith:  r.FormValue("reject_with"),
-		ExtraArgs:   parseArgs(r.FormValue("extra_args")),
+		Table:        r.FormValue("rule_table"),
+		Chain:        r.FormValue("rule_chain"),
+		Action:       r.FormValue("rule_action"),
+		Position:     position,
+		Protocol:     r.FormValue("protocol"),
+		InInterface:  r.FormValue("in_interface"),
+		OutInterface: r.FormValue("out_interface"),
+		SourceIP:     r.FormValue("source_ip"),
+		DestIP:       r.FormValue("dest_ip"),
+		SourcePort:   sourcePort,
+		DestPort:     port,
+		ConnState:    r.FormValue("conn_state"),
+		IcmpType:     r.FormValue("icmp_type"),
+		Target:       r.FormValue("target"),
+		LogPrefix:    r.FormValue("log_prefix"),
+		LogLevel:     r.FormValue("log_level"),
+		RejectWith:   r.FormValue("reject_with"),
+		ExtraArgs:    parseArgs(r.FormValue("extra_args")),
 	}
 
 	if spec.Table == "" || spec.Chain == "" {
@@ -539,23 +728,23 @@ func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-    switch ruleType {
+	switch ruleType {
 
-    case "connlimit":
-        limit, _ := strconv.Atoi(r.FormValue("conn_limit"))
-        spec.ConnLimit = &limit
-        spec.Comment = fmt.Sprintf("GoResolver:%s:CONNLIMIT_%d", spec.SourceIP, port)
+	case "connlimit":
+		limit, _ := strconv.Atoi(r.FormValue("conn_limit"))
+		spec.ConnLimit = &limit
+		spec.Comment = fmt.Sprintf("GoResolver:%s:CONNLIMIT_%d", spec.SourceIP, port)
 
-    case "ratelimit":
-        spec.LimitRate = r.FormValue("rate")
-        spec.LimitBurst = r.FormValue("burst")
-        spec.Comment = fmt.Sprintf("GoResolver:%s:RATELIMIT", spec.SourceIP)
+	case "ratelimit":
+		spec.LimitRate = r.FormValue("rate")
+		spec.LimitBurst = r.FormValue("burst")
+		spec.Comment = fmt.Sprintf("GoResolver:%s:RATELIMIT", spec.SourceIP)
 
-    case "syn":
-        spec.LimitRate = r.FormValue("rate")
-        spec.LimitBurst = r.FormValue("burst")
-        spec.SynOnly = true
-        spec.Comment = fmt.Sprintf("GoResolver:%s:SYN", spec.SourceIP)
+	case "syn":
+		spec.LimitRate = r.FormValue("rate")
+		spec.LimitBurst = r.FormValue("burst")
+		spec.SynOnly = true
+		spec.Comment = fmt.Sprintf("GoResolver:%s:SYN", spec.SourceIP)
 
 	case "dnat":
 		spec.ToIP = r.FormValue("to_ip")
@@ -569,24 +758,24 @@ func (h *ServerConfigurationHandler) AddRule(w http.ResponseWriter, r *http.Requ
 		spec.Chain = "POSTROUTING"
 		spec.Comment = "GoResolver:MASQUERADE"
 
-    case "block":
-        spec.Target = "DROP"
-        spec.Comment = "GoResolver:" + spec.SourceIP + ":BLOCK"
+	case "block":
+		spec.Target = "DROP"
+		spec.Comment = "GoResolver:" + spec.SourceIP + ":BLOCK"
 
-    case "allow":
-        spec.Target = "ACCEPT"
-        spec.Comment = "GoResolver:" + spec.SourceIP + ":ALLOW"
-    }
+	case "allow":
+		spec.Target = "ACCEPT"
+		spec.Comment = "GoResolver:" + spec.SourceIP + ":ALLOW"
+	}
 
 	userComment := strings.TrimSpace(r.FormValue("rule_comment"))
 	spec.Comment = withRuleComment(spec.Comment, mux.Vars(r)["id"], ruleType, userComment)
 
-    if err := h.Service.AddRule(spec); err != nil {
-        http.Error(w, err.Error(), 500)
-        return
-    }
+	if err := h.Service.AddRule(spec); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 
-    redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
+	redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
 }
 
 func withRuleComment(base, serverID, ruleType, userComment string) string {
@@ -659,32 +848,35 @@ func parseArgs(input string) []string {
 }
 
 func (h *ServerConfigurationHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
-    r.ParseForm()
+	if err := parseServerConfigurationForm(r); err != nil {
+		http.Error(w, "Invalid form", http.StatusBadRequest)
+		return
+	}
 
-    table := r.FormValue("table")
-    chain := r.FormValue("chain")
-    comment := r.FormValue("comment")
+	table := r.FormValue("table")
+	chain := r.FormValue("chain")
+	comment := r.FormValue("comment")
 
-    if table == "" || chain == "" || comment == "" {
-        http.Error(w, "Missing rule identifier", http.StatusBadRequest)
-        return
-    }
+	if table == "" || chain == "" || comment == "" {
+		http.Error(w, "Missing rule identifier", http.StatusBadRequest)
+		return
+	}
 
-    if err := h.Service.DeleteRuleByComment(chain, table, comment); err != nil {
-        log.Println("Delete rule failed:", err)
-        http.Error(w, "Failed to delete rule: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
+	if err := h.Service.DeleteRuleByComment(chain, table, comment); err != nil {
+		log.Println("Delete rule failed:", err)
+		http.Error(w, "Failed to delete rule: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-    redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
+	redirectWithTab(w, r, mux.Vars(r)["id"], "tab6")
 }
 
 func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *http.Request) {
-    serverID := mux.Vars(r)["id"]
-    if serverID == "" {
-        http.Error(w, "No server id supplied", http.StatusBadRequest)
-        return
-    }
+	serverID := mux.Vars(r)["id"]
+	if serverID == "" {
+		http.Error(w, "No server id supplied", http.StatusBadRequest)
+		return
+	}
 
 	vpn_ip := r.FormValue("vpn_ip")
 	if vpn_ip == "" {
@@ -695,22 +887,22 @@ func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *h
 	pass := r.FormValue("pass")
 	if pass == "" {
 		http.Error(w, "Passphrase required", http.StatusBadRequest)
-		return 
+		return
 	}
 
-    clientName := fmt.Sprintf("client-%s", serverID)
+	clientName := fmt.Sprintf("client-%s", serverID)
 
-    config, err := h.Service.GenerateVPNClientConfig(serverID, clientName, pass)
-    if err != nil {
-        http.Error(w, "Failed to generate VPN config: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
+	config, err := h.Service.GenerateVPNClientConfig(serverID, clientName, pass)
+	if err != nil {
+		http.Error(w, "Failed to generate VPN config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-    err = h.Service.SaveVPNConfig(serverID, []byte(config))
-    if err != nil {
-        http.Error(w, "Failed to save VPN config: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
+	err = h.Service.SaveVPNConfig(serverID, []byte(config))
+	if err != nil {
+		http.Error(w, "Failed to save VPN config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	err = h.Service.AssignStaticVPNIP(clientName, vpn_ip)
 	if err != nil {
@@ -733,7 +925,7 @@ func (h *ServerConfigurationHandler) UpdateDDoS(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
+	if err := parseServerConfigurationForm(r); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
@@ -878,9 +1070,7 @@ func (h *ServerConfigurationHandler) UnbanFail2Ban(w http.ResponseWriter, r *htt
 	redirectWithTab(w, r, serverID, "tab8")
 }
 
-
 func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab string) {
-
 
 	redirectURL := "/servers/" + serverID + "/server_configuration"
 	if tab != "" {
@@ -889,6 +1079,3 @@ func redirectWithTab(w http.ResponseWriter, r *http.Request, serverID, tab strin
 	//http.Redirect(w, r, redirectURL, http.StatusFound)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
-
-
-
