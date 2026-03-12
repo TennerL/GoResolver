@@ -315,99 +315,113 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	}
 
 	whitelist := normalizeWhitelistEntries(p.Whitelist)
-	if len(whitelist) > 0 {
-		insertAt, err := s.findLastRulePositionByComment("INPUT", "filter", "GoResolver:Fail2Ban:")
-		if err != nil {
-			return err
+	families, err := firewallFamiliesForServer(destIP, whitelist)
+	if err != nil {
+		return err
+	}
+
+	for _, family := range families {
+		familyDestIP := firewallDestinationForFamily(destIP, family)
+		familyWhitelist := filterIPsByFirewallFamily(whitelist, family)
+
+		if len(familyWhitelist) > 0 {
+			insertAt, err := s.findLastRulePositionByComment("INPUT", "filter", "GoResolver:Fail2Ban:", family)
+			if err != nil {
+				return err
+			}
+			if insertAt <= 0 {
+				insertAt = 1
+			} else {
+				insertAt++
+			}
+			for _, port := range ports {
+				for _, entry := range familyWhitelist {
+					if err := s.AddRule(models.IPTablesRuleSpec{
+						Family:   family,
+						Table:    "filter",
+						Chain:    "INPUT",
+						Action:   "insert",
+						Position: insertAt,
+						Protocol: "tcp",
+						SourceIP: entry,
+						DestIP:   familyDestIP,
+						DestPort: port,
+						Target:   "ACCEPT",
+						Comment:  fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
+					}); err != nil {
+						return err
+					}
+					insertAt++
+				}
+			}
 		}
-		if insertAt <= 0 {
-			insertAt = 1
-		} else {
-			insertAt++
-		}
+
 		for _, port := range ports {
-			for _, entry := range whitelist {
+			if p.ConnLimit > 0 {
+				cl := p.ConnLimit
 				if err := s.AddRule(models.IPTablesRuleSpec{
-					Table:    "filter",
-					Chain:    "INPUT",
-					Action:   "insert",
-					Position: insertAt,
-					Protocol: "tcp",
-					SourceIP: entry,
-					DestIP:   destIP,
-					DestPort: port,
-					Target:   "ACCEPT",
-					Comment:  fmt.Sprintf("GoResolver:DDoS:%s:WL:%d:%s", serverID, port, entry),
+					Family:    family,
+					Table:     "filter",
+					Chain:     "INPUT",
+					Action:    "append",
+					Protocol:  "tcp",
+					DestIP:    familyDestIP,
+					DestPort:  port,
+					ConnLimit: &cl,
+					Target:    "DROP",
+					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:CL%d", serverID, port),
 				}); err != nil {
 					return err
 				}
-				insertAt++
 			}
-		}
-	}
 
-	for _, port := range ports {
-		if p.ConnLimit > 0 {
-			cl := p.ConnLimit
-			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:     "filter",
-				Chain:     "INPUT",
-				Action:    "append",
-				Protocol:  "tcp",
-				DestIP:    destIP,
-				DestPort:  port,
-				ConnLimit: &cl,
-				Target:    "DROP",
-				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:CL%d", serverID, port),
-			}); err != nil {
-				return err
+			if p.RateLimit > 0 {
+				args := []string{
+					"-m", "hashlimit",
+					"--hashlimit-above", fmt.Sprintf("%d/second", p.RateLimit),
+					"--hashlimit-burst", strconv.Itoa(max(1, p.Burst)),
+					"--hashlimit-mode", "srcip",
+					"--hashlimit-name", fmt.Sprintf("gr_%s_rl_%s_%d", serverID, firewallHashSuffix(family), port),
+				}
+				if err := s.AddRule(models.IPTablesRuleSpec{
+					Family:    family,
+					Table:     "filter",
+					Chain:     "INPUT",
+					Action:    "append",
+					Protocol:  "tcp",
+					DestIP:    familyDestIP,
+					DestPort:  port,
+					ExtraArgs: args,
+					Target:    "DROP",
+					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:RL%d", serverID, port),
+				}); err != nil {
+					return err
+				}
 			}
-		}
 
-		if p.RateLimit > 0 {
-			args := []string{
-				"-m", "hashlimit",
-				"--hashlimit-above", fmt.Sprintf("%d/second", p.RateLimit),
-				"--hashlimit-burst", strconv.Itoa(max(1, p.Burst)),
-				"--hashlimit-mode", "srcip",
-				"--hashlimit-name", fmt.Sprintf("gr_%s_rl_%d", serverID, port),
-			}
-			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:     "filter",
-				Chain:     "INPUT",
-				Action:    "append",
-				Protocol:  "tcp",
-				DestIP:    destIP,
-				DestPort:  port,
-				ExtraArgs: args,
-				Target:    "DROP",
-				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:RL%d", serverID, port),
-			}); err != nil {
-				return err
-			}
-		}
-
-		if p.SynRate > 0 {
-			args := []string{
-				"-m", "hashlimit",
-				"--hashlimit-above", fmt.Sprintf("%d/second", p.SynRate),
-				"--hashlimit-burst", strconv.Itoa(max(1, p.SynBurst)),
-				"--hashlimit-mode", "srcip",
-				"--hashlimit-name", fmt.Sprintf("gr_%s_syn_%d", serverID, port),
-			}
-			if err := s.AddRule(models.IPTablesRuleSpec{
-				Table:     "filter",
-				Chain:     "INPUT",
-				Action:    "append",
-				Protocol:  "tcp",
-				SynOnly:   true,
-				DestIP:    destIP,
-				DestPort:  port,
-				ExtraArgs: args,
-				Target:    "DROP",
-				Comment:   fmt.Sprintf("GoResolver:DDoS:%s:SYN%d", serverID, port),
-			}); err != nil {
-				return err
+			if p.SynRate > 0 {
+				args := []string{
+					"-m", "hashlimit",
+					"--hashlimit-above", fmt.Sprintf("%d/second", p.SynRate),
+					"--hashlimit-burst", strconv.Itoa(max(1, p.SynBurst)),
+					"--hashlimit-mode", "srcip",
+					"--hashlimit-name", fmt.Sprintf("gr_%s_syn_%s_%d", serverID, firewallHashSuffix(family), port),
+				}
+				if err := s.AddRule(models.IPTablesRuleSpec{
+					Family:    family,
+					Table:     "filter",
+					Chain:     "INPUT",
+					Action:    "append",
+					Protocol:  "tcp",
+					SynOnly:   true,
+					DestIP:    familyDestIP,
+					DestPort:  port,
+					ExtraArgs: args,
+					Target:    "DROP",
+					Comment:   fmt.Sprintf("GoResolver:DDoS:%s:SYN%d", serverID, port),
+				}); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -719,10 +733,9 @@ func normalizeWhitelistEntries(input string) []string {
 	return out
 }
 
-func (s *ServerConfigurationService) findLastRulePositionByComment(chain, table, comment string) (int, error) {
+func (s *ServerConfigurationService) findLastRulePositionByComment(chain, table, comment, family string) (int, error) {
 	args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
-	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-	out, err := cmd.CombinedOutput()
+	out, err := runFirewallCommand(family, args)
 	if err != nil {
 		return 0, fmt.Errorf("iptables list failed: %s", string(out))
 	}
@@ -1847,109 +1860,13 @@ func (s *ServerConfigurationService) ListIPTablesRules() ([]models.IPTablesRule,
 }
 
 func (s *ServerConfigurationService) AddRule(spec models.IPTablesRuleSpec) error {
-	args := []string{}
-
-	if spec.Table != "" && spec.Table != "filter" {
-		args = append(args, "-t", spec.Table)
+	family, err := inferFirewallFamily(spec)
+	if err != nil {
+		return err
 	}
 
-	action := "-A"
-	if strings.EqualFold(spec.Action, "insert") {
-		action = "-I"
-	}
-	args = append(args, action, spec.Chain)
-	if action == "-I" && spec.Position > 0 {
-		args = append(args, strconv.Itoa(spec.Position))
-	}
-
-	if spec.Protocol != "" && spec.Protocol != "all" {
-		args = append(args, "-p", spec.Protocol)
-	}
-
-	if spec.InInterface != "" {
-		args = append(args, "-i", spec.InInterface)
-	}
-
-	if spec.OutInterface != "" {
-		args = append(args, "-o", spec.OutInterface)
-	}
-
-	if spec.SynOnly {
-		args = append(args, "--syn")
-	}
-
-	if spec.SourceIP != "" {
-		args = append(args, "-s", spec.SourceIP)
-	}
-
-	if spec.DestIP != "" {
-		args = append(args, "-d", spec.DestIP)
-	}
-
-	if spec.SourcePort > 0 {
-		args = append(args, "--sport", strconv.Itoa(spec.SourcePort))
-	}
-
-	if spec.DestPort > 0 {
-		args = append(args, "--dport", strconv.Itoa(spec.DestPort))
-	}
-
-	if spec.ConnLimit != nil {
-		args = append(args,
-			"-m", "connlimit",
-			"--connlimit-above", strconv.Itoa(*spec.ConnLimit),
-			"--connlimit-mask", "32",
-		)
-	}
-
-	if spec.LimitRate != "" {
-		args = append(args,
-			"-m", "limit",
-			"--limit", spec.LimitRate,
-		)
-		if spec.LimitBurst != "" {
-			args = append(args, "--limit-burst", spec.LimitBurst)
-		}
-	}
-
-	if spec.ConnState != "" {
-		args = append(args, "-m", "conntrack", "--ctstate", spec.ConnState)
-	}
-
-	if spec.IcmpType != "" {
-		args = append(args, "--icmp-type", spec.IcmpType)
-	}
-
-	hasJump := hasJumpArg(spec.ExtraArgs)
-	if len(spec.ExtraArgs) > 0 {
-		args = append(args, spec.ExtraArgs...)
-	}
-
-	if !hasJump && spec.Target == "DNAT" {
-		args = append(args,
-			"-j", "DNAT",
-			"--to-destination", fmt.Sprintf("%s:%d", spec.ToIP, spec.ToPort),
-		)
-	} else if !hasJump && spec.Target != "" {
-		args = append(args, "-j", spec.Target)
-
-		if spec.Target == "LOG" && spec.LogPrefix != "" {
-			args = append(args, "--log-prefix", spec.LogPrefix)
-		}
-		if spec.Target == "LOG" && spec.LogLevel != "" {
-			args = append(args, "--log-level", spec.LogLevel)
-		}
-		if spec.Target == "REJECT" && spec.RejectWith != "" {
-			args = append(args, "--reject-with", spec.RejectWith)
-		}
-	}
-
-	if spec.Comment != "" {
-		args = append(args, "-m", "comment", "--comment", spec.Comment)
-	}
-
-	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-	out, err := cmd.CombinedOutput()
+	args := buildFirewallRuleArgs(spec, family)
+	out, err := runFirewallCommand(family, args)
 	if err != nil {
 		return fmt.Errorf("iptables error: %s", out)
 	}
@@ -1966,15 +1883,14 @@ func hasJumpArg(args []string) bool {
 	return false
 }
 
-func (s *ServerConfigurationService) DeleteRule(chain string, num int, table string) error {
+func (s *ServerConfigurationService) DeleteRule(chain string, num int, table, family string) error {
 	args := []string{}
 	if table != "" && table != "filter" {
 		args = append(args, "-t", table)
 	}
 	args = append(args, "-D", chain, strconv.Itoa(num))
 
-	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-	out, err := cmd.CombinedOutput()
+	out, err := runFirewallCommand(family, args)
 	if err != nil {
 		return fmt.Errorf("iptables delete failed: %s", string(out))
 	}
@@ -1982,11 +1898,34 @@ func (s *ServerConfigurationService) DeleteRule(chain string, num int, table str
 }
 
 func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment string) error {
+	found := false
+	var lastErr error
+	for _, family := range []string{firewallFamilyIPv4, firewallFamilyIPv6} {
+		if !firewallBinaryAvailable(family) {
+			continue
+		}
+		deleted, err := s.deleteRuleByCommentForFamily(chain, table, comment, family)
+		if deleted {
+			found = true
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if found {
+		return lastErr
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
+}
+
+func (s *ServerConfigurationService) deleteRuleByCommentForFamily(chain, table, comment, family string) (bool, error) {
 	args := []string{"-t", table, "-L", chain, "-n", "--line-numbers"}
-	cmd := exec.Command("sudo", append([]string{"/sbin/iptables"}, args...)...)
-	out, err := cmd.CombinedOutput()
+	out, err := runFirewallCommand(family, args)
 	if err != nil {
-		return fmt.Errorf("iptables list failed: %s", string(out))
+		return false, fmt.Errorf("iptables list failed: %s", string(out))
 	}
 
 	lines := strings.Split(string(out), "\n")
@@ -2003,14 +1942,14 @@ func (s *ServerConfigurationService) DeleteRuleByComment(chain, table, comment s
 		}
 	}
 	if len(nums) == 0 {
-		return fmt.Errorf("rule with comment '%s' not found in %s:%s", comment, table, chain)
+		return false, nil
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(nums)))
 	var lastErr error
 	for _, num := range nums {
-		if err := s.DeleteRule(chain, num, table); err != nil {
+		if err := s.DeleteRule(chain, num, table, family); err != nil {
 			lastErr = err
 		}
 	}
-	return lastErr
+	return true, lastErr
 }

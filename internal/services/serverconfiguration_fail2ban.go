@@ -309,9 +309,6 @@ func (s *ServerConfigurationService) applyFail2BanPolicy(p models.Fail2BanPolicy
 		if offender.IP == "" {
 			continue
 		}
-		if strings.Contains(offender.IP, ":") {
-			continue
-		}
 		if ipIgnored(offender.IP, ignoreMatchers) {
 			continue
 		}
@@ -373,6 +370,10 @@ func (s *ServerConfigurationService) findFail2BanOffenders(p models.Fail2BanPoli
 func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serverIP, ip string, hits int) error {
 	now := time.Now().UTC()
 	expires := now.Add(time.Duration(p.BanTimeSeconds) * time.Second)
+	family := firewallFamilyForValue(ip)
+	if family == "" {
+		return fmt.Errorf("invalid fail2ban ip %q", ip)
+	}
 
 	var existingExpires sql.NullTime
 	err := db.DB.QueryRow(`
@@ -391,13 +392,14 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 	comment := fail2BanRuleComment(p.ServerID, ip)
 	chain := "INPUT"
 	sourceIP := ip
-	destIP := strings.TrimSpace(serverIP)
+	destIP := firewallDestinationForFamily(serverIP, family)
 	if p.BanGlobally {
-		if resolved := s.resolveLocalBanDestinationIP(); resolved != "" {
+		if resolved := s.resolveLocalBanDestinationIP(family); resolved != "" {
 			destIP = resolved
 		}
 	}
 	if err := s.AddRule(models.IPTablesRuleSpec{
+		Family:   family,
 		Table:    "filter",
 		Chain:    chain,
 		Action:   "insert",
@@ -507,7 +509,7 @@ func parseStatusCodes(input string) []int {
 }
 
 type ipMatcher struct {
-	ip    net.IP
+	ip      net.IP
 	network *net.IPNet
 }
 
@@ -566,7 +568,7 @@ func fail2BanRuleComment(serverID, ip string) string {
 	return fmt.Sprintf("GoResolver:Fail2Ban:%s:%s", serverID, ip)
 }
 
-func (s *ServerConfigurationService) resolveLocalBanDestinationIP() string {
+func (s *ServerConfigurationService) resolveLocalBanDestinationIP(family string) string {
 	settings := NewSettingsService()
 	candidates := []string{
 		strings.TrimSpace(settings.GetValue("app.base_url")),
@@ -587,8 +589,12 @@ func (s *ServerConfigurationService) resolveLocalBanDestinationIP() string {
 			continue
 		}
 		if ip := net.ParseIP(host); ip != nil {
-			if v4 := ip.To4(); v4 != nil {
-				return v4.String()
+			if family == firewallFamilyIPv4 {
+				if v4 := ip.To4(); v4 != nil {
+					return v4.String()
+				}
+			} else if ip.To16() != nil && ip.To4() == nil {
+				return ip.String()
 			}
 			continue
 		}
@@ -597,8 +603,14 @@ func (s *ServerConfigurationService) resolveLocalBanDestinationIP() string {
 			continue
 		}
 		for _, ip := range ips {
-			if v4 := ip.To4(); v4 != nil {
-				return v4.String()
+			if family == firewallFamilyIPv4 {
+				if v4 := ip.To4(); v4 != nil {
+					return v4.String()
+				}
+				continue
+			}
+			if ip.To16() != nil && ip.To4() == nil {
+				return ip.String()
 			}
 		}
 	}

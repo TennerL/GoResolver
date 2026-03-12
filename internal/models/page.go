@@ -11,60 +11,61 @@ type PageData struct {
 }
 
 type IPTablesRule struct {
-    Table       string
-    Chain       string
-    Num         string
-    Pkts        string
-    Bytes       string
-    Target      string
-    Prot        string
-    Opt         string
-    In          string
-    Out         string
-    Source      string
-    Destination string
-    Extra       string
-    Limit       string
+	Table       string
+	Chain       string
+	Num         string
+	Pkts        string
+	Bytes       string
+	Target      string
+	Prot        string
+	Opt         string
+	In          string
+	Out         string
+	Source      string
+	Destination string
+	Extra       string
+	Limit       string
 }
 
 type IPTablesRuleSpec struct {
-    Table        string
-    Chain        string
-    Action       string
-    Position     int
-    Protocol     string
-    InInterface  string
-    OutInterface string
-    SourceIP     string
-    DestIP       string
-    SourcePort   int
-    DestPort     int
-    ConnLimit    *int
-    LimitRate    string
-    LimitBurst   string
-    SynOnly      bool
-    ConnState    string
-    IcmpType     string
-    ToIP         string
-    ToPort       int
-    Target       string
-    Comment      string
-    LogPrefix    string
-    LogLevel     string
-    RejectWith   string
-    ExtraArgs    []string
+	Family       string
+	Table        string
+	Chain        string
+	Action       string
+	Position     int
+	Protocol     string
+	InInterface  string
+	OutInterface string
+	SourceIP     string
+	DestIP       string
+	SourcePort   int
+	DestPort     int
+	ConnLimit    *int
+	LimitRate    string
+	LimitBurst   string
+	SynOnly      bool
+	ConnState    string
+	IcmpType     string
+	ToIP         string
+	ToPort       int
+	Target       string
+	Comment      string
+	LogPrefix    string
+	LogLevel     string
+	RejectWith   string
+	ExtraArgs    []string
 }
 
 type RuleForm struct {
-    RuleType  string
-    SourceIP  string
-    Port      int
-    ConnLimit int
-    Rate      string
-    Burst     string
-    ToIP      string
-    ToPort    int
-    Target    string
+	RuleType  string
+	SourceIP  string
+	Port      int
+	ConnLimit int
+	Rate      string
+	Burst     string
+	ToIP      string
+	ToPort    int
+	Target    string
 }
 
 type PageDataServerConfig struct {
