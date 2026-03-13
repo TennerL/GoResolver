@@ -28,10 +28,6 @@ The goal is simple: manage network-facing services from one place without depend
 
 The installer handles package installation, database/schema setup, admin user creation, and initial app settings.
 
-## General
-
-This project focuses on scalable network infrastructure management, providing a centralized approach while relying on a single self-managed service.
-
 ## Screenshots
 
 |                 |            |
