@@ -34,7 +34,7 @@ The installer handles package installation, database/schema setup, admin user cr
 |-----------------|------------|
 | ![](1.png)      | ![](3.png) |
 | ![](2.png)      | ![](4.png) | 
-| ![](5.png)      |            | 
+| ![](5.png)      | ![](6.png) | 
 
 ## Key Features
 
