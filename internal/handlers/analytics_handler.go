@@ -72,14 +72,15 @@ func analyticsQueryUsesCacheOnly(qValues map[string][]string) bool {
 func parseAnalyticsFilters(r *http.Request) services.AnalyticsFilters {
 	q := r.URL.Query()
 	filters := services.AnalyticsFilters{
-		RangeMinutes: 60,
-		Host:         strings.TrimSpace(q.Get("host")),
-		Method:       strings.TrimSpace(q.Get("method")),
-		StatusClass:  strings.TrimSpace(q.Get("status_class")),
-		URIContains:  strings.TrimSpace(q.Get("uri_contains")),
-		IPContains:   strings.TrimSpace(q.Get("ip_contains")),
-		Verdict:      strings.TrimSpace(q.Get("filter")),
-		CacheOnly:    analyticsQueryUsesCacheOnly(q),
+		RangeMinutes:       60,
+		Host:               strings.TrimSpace(q.Get("host")),
+		Method:             strings.TrimSpace(q.Get("method")),
+		StatusClass:        strings.TrimSpace(q.Get("status_class")),
+		URIContains:        strings.TrimSpace(q.Get("uri_contains")),
+		IPContains:         strings.TrimSpace(q.Get("ip_contains")),
+		Verdict:            strings.TrimSpace(q.Get("filter")),
+		CacheOnly:          analyticsQueryUsesCacheOnly(q),
+		IncludeInternalAPI: strings.EqualFold(strings.TrimSpace(q.Get("include_internal_api")), "true") || strings.TrimSpace(q.Get("include_internal_api")) == "1",
 	}
 
 	if v := strings.TrimSpace(q.Get("range")); v != "" {
@@ -104,49 +105,12 @@ func parseAnalyticsFilters(r *http.Request) services.AnalyticsFilters {
 
 func (h *AnalyticsHandler) API(w http.ResponseWriter, r *http.Request) {
 	filters := parseAnalyticsFilters(r)
-
-	reqLabels, reqValues, err := h.Service.RequestsOverTime(filters)
+	snapshot, err := h.Service.Snapshot(filters)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	statusCodes, err := h.Service.StatusCodes(filters)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	uriLabels, uriStatusCounts, err := h.Service.TopURIs(filters)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	latLabels, latValues, err := h.Service.AvgRequestTime(filters)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	methods, err := h.Service.Methods(filters)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	summary, err := h.Service.Summary(filters)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	resp := map[string]any{
-		"requests_over_time": map[string]any{"labels": reqLabels, "values": reqValues},
-		"status_codes":       statusCodes,
-		"top_uris":           map[string]any{"labels": uriLabels, "status_codes": uriStatusCounts},
-		"avg_request_time":   map[string]any{"labels": latLabels, "values": latValues},
-		"methods":            methods,
-		"summary":            summary,
-		"cache_only":         filters.CacheOnly,
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (h *AnalyticsHandler) Hosts(w http.ResponseWriter, r *http.Request) {

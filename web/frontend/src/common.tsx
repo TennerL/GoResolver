@@ -268,6 +268,41 @@ export function buildStatusOption(statusCodes) {
   };
 }
 
+export function buildRankingOption(series, color = "#ff6d4d") {
+  if (!series?.labels?.length) return null;
+  const data = series.values.map((value, index) => ({
+    value,
+    urls: Array.isArray(series.urls?.[index]) ? series.urls[index] : []
+  }));
+  return {
+    tooltip: {
+      trigger: "item",
+      formatter: (param) => {
+        const name = escapeTooltipHTML(String(param.name || ""));
+        const value = typeof param.data?.value === "number" ? param.data.value : Number(param.value || 0);
+        const urls = Array.isArray(param.data?.urls) ? param.data.urls : [];
+        const urlList = urls.length
+          ? urls.map((url) => `<div style="margin-top:4px;color:#cbd5e1">${escapeTooltipHTML(String(url))}</div>`).join("")
+          : '<div style="margin-top:4px;color:#94a3b8">No URL details available</div>';
+        return `<div><div style="font-weight:600;margin-bottom:4px">${name}</div><div style="margin-bottom:6px">Requests: ${value}</div><div style="color:#94a3b8">Top URLs</div>${urlList}</div>`;
+      }
+    },
+    grid: { top: 24, left: 88, right: 16, bottom: 28 },
+    xAxis: { type: "value", axisLabel: { color: "#94a3b8" }, splitLine: { lineStyle: { color: "rgba(148,163,184,0.18)" } } },
+    yAxis: { type: "category", data: series.labels, inverse: true, axisLabel: { color: "#94a3b8" } },
+    series: [{ type: "bar", data, itemStyle: { color }, barMaxWidth: 18 }]
+  };
+}
+
+function escapeTooltipHTML(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 export function buildTopUrisOption(series) {
   if (!series?.labels?.length) return null;
   const activeCodes = Object.keys(series.status_codes || {}).filter((code) => series.status_codes[code]?.some((value) => value > 0));

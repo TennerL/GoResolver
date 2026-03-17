@@ -1,8 +1,8 @@
-import { Badge, Button, Container, Grid, Group, Modal, NativeSelect, Paper, SimpleGrid, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Badge, Button, Checkbox, Container, Grid, Group, Modal, NativeSelect, Paper, SimpleGrid, Stack, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { IconAdjustmentsHorizontal, IconMapPin, IconRefresh, IconSearch } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChartCard, MapCard, PageHeader, StatusBadge, buildLineOption, buildStatusOption, buildTopUrisOption, fetchJSON } from "../common";
+import { ChartCard, MapCard, PageHeader, StatusBadge, buildLineOption, buildRankingOption, buildStatusOption, buildTopUrisOption, fetchJSON } from "../common";
 
 const defaultFilters = {
   range: "60",
@@ -14,7 +14,8 @@ const defaultFilters = {
   status: "",
   statusClass: "",
   uriContains: "",
-  ipContains: ""
+  ipContains: "",
+  excludeInternalAPI: true
 };
 
 const emptyAnalytics = {
@@ -23,6 +24,7 @@ const emptyAnalytics = {
   top_uris: { labels: [], status_codes: {} },
   avg_request_time: { labels: [], values: [] },
   methods: {},
+  top_ips: { labels: [], values: [], urls: [] },
   summary: { total_requests: 0, unique_ips: 0, error_requests: 0, error_rate: 0, avg_request_time_ms: 0, transferred_bytes: 0 },
   cache_only: false
 };
@@ -127,6 +129,7 @@ function buildAnalyticsQuery(filters) {
   if (filters.statusClass) params.set("status_class", filters.statusClass);
   if (filters.uriContains.trim()) params.set("uri_contains", filters.uriContains.trim());
   if (filters.ipContains.trim()) params.set("ip_contains", filters.ipContains.trim());
+  if (!filters.excludeInternalAPI) params.set("include_internal_api", "1");
   if (hasCustomFilters(filters)) params.set("cache_only", "1");
   return params.toString();
 }
@@ -312,6 +315,7 @@ export function AnalyticsPageView() {
         <Stack gap="sm">
           <Group gap="sm">
             {filterBadges.length === 0 ? <Badge variant="light" color="gray">Default slice</Badge> : filterBadges.map((item) => <Badge key={item} variant="light" color="gray">{item}</Badge>)}
+            {filters.excludeInternalAPI ? <Badge variant="light" color="teal">Internal API excluded</Badge> : <Badge variant="light" color="orange">Internal API included</Badge>}
             {cacheOnly ? <Badge variant="light" color="orange">Filtered view: cached reputation only</Badge> : <Badge variant="light" color="teal">Live reputation allowed</Badge>}
           </Group>
           <Text size="sm" c="dimmed">
@@ -332,6 +336,7 @@ export function AnalyticsPageView() {
         <ChartCard title="Requests over time" option={buildLineOption(analytics.requests_over_time, "#ff6d4d")} />
         <ChartCard title="Status codes" option={buildStatusOption(analytics.status_codes)} />
         <ChartCard title="Top URIs" option={buildTopUrisOption(analytics.top_uris)} />
+        <ChartCard title="Top IP addresses" option={buildRankingOption(analytics.top_ips, "#ffd43b")} />
         <ChartCard title="Average request time" option={buildLineOption(analytics.avg_request_time, "#52a8ff")} />
         <ChartCard title="Request methods" option={buildStatusOption(analytics.methods)} />
       </SimpleGrid>
@@ -441,6 +446,12 @@ export function AnalyticsPageView() {
               onChange={(event) => updateDraft("ipContains", event.currentTarget.value)}
             />
           </SimpleGrid>
+          <Checkbox
+            label="Exclude internal API routes"
+            description="Filters out dashboard requests under /api/... by default so the charts stay focused on external traffic."
+            checked={draftFilters.excludeInternalAPI}
+            onChange={(event) => updateDraft("excludeInternalAPI", event.currentTarget.checked)}
+          />
           <Text size="sm" c="dimmed">
             Applying any custom filter switches IP reputation to cached-only mode to avoid repeated live AbuseIPDB checks while drilling down.
           </Text>

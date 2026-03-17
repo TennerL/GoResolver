@@ -10,23 +10,37 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
-type AnalyticsService struct{}
+const (
+	analyticsSnapshotTTL      = 5 * time.Second
+	analyticsSnapshotCacheMax = 128
+)
+
+type AnalyticsService struct {
+	cacheMu        sync.RWMutex
+	snapshotCache  map[string]analyticsSnapshotCacheEntry
+	snapshotLoader singleflight.Group
+}
 
 type AnalyticsFilters struct {
-	RangeMinutes int
-	Host         string
-	Method       string
-	Status       int
-	StatusClass  string
-	URIContains  string
-	IPContains   string
-	Verdict      string
-	From         time.Time
-	To           time.Time
-	CacheOnly    bool
+	RangeMinutes       int
+	Host               string
+	Method             string
+	Status             int
+	StatusClass        string
+	URIContains        string
+	IPContains         string
+	Verdict            string
+	From               time.Time
+	To                 time.Time
+	CacheOnly          bool
+	IncludeInternalAPI bool
 }
 
 type AnalyticsSummary struct {
@@ -38,8 +52,47 @@ type AnalyticsSummary struct {
 	TransferredBytes int64   `json:"transferred_bytes"`
 }
 
+type analyticsIntSeries struct {
+	Labels []string `json:"labels"`
+	Values []int    `json:"values"`
+}
+
+type analyticsFloatSeries struct {
+	Labels []string  `json:"labels"`
+	Values []float64 `json:"values"`
+}
+
+type analyticsTopURIs struct {
+	Labels      []string         `json:"labels"`
+	StatusCodes map[string][]int `json:"status_codes"`
+}
+
+type analyticsTopIPs struct {
+	Labels []string   `json:"labels"`
+	Values []int      `json:"values"`
+	URLs   [][]string `json:"urls"`
+}
+
+type AnalyticsSnapshot struct {
+	RequestsOverTime analyticsIntSeries   `json:"requests_over_time"`
+	StatusCodes      map[int]int          `json:"status_codes"`
+	TopURIs          analyticsTopURIs     `json:"top_uris"`
+	AvgRequestTime   analyticsFloatSeries `json:"avg_request_time"`
+	Methods          map[string]int       `json:"methods"`
+	TopIPs           analyticsTopIPs      `json:"top_ips"`
+	Summary          AnalyticsSummary     `json:"summary"`
+	CacheOnly        bool                 `json:"cache_only"`
+}
+
+type analyticsSnapshotCacheEntry struct {
+	snapshot  AnalyticsSnapshot
+	expiresAt time.Time
+}
+
 func NewAnalyticsService() *AnalyticsService {
-	return &AnalyticsService{}
+	return &AnalyticsService{
+		snapshotCache: make(map[string]analyticsSnapshotCacheEntry),
+	}
 }
 
 func normalizeAnalyticsFilters(filters AnalyticsFilters) AnalyticsFilters {
@@ -135,12 +188,177 @@ func analyticsWhereClause(filters AnalyticsFilters) (string, []any) {
 		conditions = append(conditions, "(remote_addr LIKE ? OR x_forwarded_for LIKE ?)")
 		args = append(args, like, like)
 	}
+	if !filters.IncludeInternalAPI {
+		conditions = append(conditions, "uri NOT LIKE ?")
+		args = append(args, "/api/%")
+	}
 
 	return "WHERE " + strings.Join(conditions, " AND "), args
 }
 
 func analyticsClientIPExpr() string {
 	return "CASE WHEN TRIM(COALESCE(SUBSTRING_INDEX(x_forwarded_for, ',', 1), '')) <> '' THEN TRIM(SUBSTRING_INDEX(x_forwarded_for, ',', 1)) ELSE TRIM(remote_addr) END"
+}
+
+func analyticsSnapshotCacheKey(filters AnalyticsFilters) string {
+	filters = normalizeAnalyticsFilters(filters)
+	return strings.Join([]string{
+		strconv.Itoa(filters.RangeMinutes),
+		filters.Host,
+		filters.Method,
+		strconv.Itoa(filters.Status),
+		filters.StatusClass,
+		filters.URIContains,
+		filters.IPContains,
+		filters.Verdict,
+		filters.From.Format(time.RFC3339Nano),
+		filters.To.Format(time.RFC3339Nano),
+		strconv.FormatBool(filters.IncludeInternalAPI),
+	}, "\x1f")
+}
+
+func (s *AnalyticsService) getCachedSnapshot(key string) (AnalyticsSnapshot, bool) {
+	s.cacheMu.RLock()
+	entry, ok := s.snapshotCache[key]
+	s.cacheMu.RUnlock()
+	if !ok {
+		return AnalyticsSnapshot{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		s.cacheMu.Lock()
+		delete(s.snapshotCache, key)
+		s.cacheMu.Unlock()
+		return AnalyticsSnapshot{}, false
+	}
+	return entry.snapshot, true
+}
+
+func (s *AnalyticsService) setCachedSnapshot(key string, snapshot AnalyticsSnapshot) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	if s.snapshotCache == nil {
+		s.snapshotCache = make(map[string]analyticsSnapshotCacheEntry)
+	}
+
+	if len(s.snapshotCache) >= analyticsSnapshotCacheMax {
+		now := time.Now()
+		for cacheKey, entry := range s.snapshotCache {
+			if now.After(entry.expiresAt) {
+				delete(s.snapshotCache, cacheKey)
+			}
+		}
+		if len(s.snapshotCache) >= analyticsSnapshotCacheMax {
+			for cacheKey := range s.snapshotCache {
+				delete(s.snapshotCache, cacheKey)
+				break
+			}
+		}
+	}
+
+	s.snapshotCache[key] = analyticsSnapshotCacheEntry{
+		snapshot:  snapshot,
+		expiresAt: time.Now().Add(analyticsSnapshotTTL),
+	}
+}
+
+func (s *AnalyticsService) Snapshot(filters AnalyticsFilters) (AnalyticsSnapshot, error) {
+	normalized := normalizeAnalyticsFilters(filters)
+	cacheKey := analyticsSnapshotCacheKey(normalized)
+
+	if snapshot, ok := s.getCachedSnapshot(cacheKey); ok {
+		snapshot.CacheOnly = normalized.CacheOnly
+		return snapshot, nil
+	}
+
+	value, err, _ := s.snapshotLoader.Do(cacheKey, func() (any, error) {
+		if snapshot, ok := s.getCachedSnapshot(cacheKey); ok {
+			return snapshot, nil
+		}
+
+		snapshot, err := s.buildSnapshot(normalized)
+		if err != nil {
+			return AnalyticsSnapshot{}, err
+		}
+		s.setCachedSnapshot(cacheKey, snapshot)
+		return snapshot, nil
+	})
+	if err != nil {
+		return AnalyticsSnapshot{}, err
+	}
+
+	snapshot := value.(AnalyticsSnapshot)
+	snapshot.CacheOnly = normalized.CacheOnly
+	return snapshot, nil
+}
+
+func (s *AnalyticsService) buildSnapshot(filters AnalyticsFilters) (AnalyticsSnapshot, error) {
+	var (
+		snapshot        AnalyticsSnapshot
+		reqLabels       []string
+		reqValues       []int
+		statusCodes     map[int]int
+		uriLabels       []string
+		uriStatusCounts map[string][]int
+		latLabels       []string
+		latValues       []float64
+		methods         map[string]int
+		ipLabels        []string
+		ipValues        []int
+		ipURLs          [][]string
+		summary         AnalyticsSummary
+	)
+
+	var group errgroup.Group
+	group.Go(func() error {
+		var err error
+		reqLabels, reqValues, err = s.RequestsOverTime(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		statusCodes, err = s.StatusCodes(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		uriLabels, uriStatusCounts, err = s.TopURIs(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		latLabels, latValues, err = s.AvgRequestTime(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		methods, err = s.Methods(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		ipLabels, ipValues, ipURLs, err = s.TopIPs(filters)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		summary, err = s.Summary(filters)
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return AnalyticsSnapshot{}, err
+	}
+
+	snapshot = AnalyticsSnapshot{
+		RequestsOverTime: analyticsIntSeries{Labels: reqLabels, Values: reqValues},
+		StatusCodes:      statusCodes,
+		TopURIs:          analyticsTopURIs{Labels: uriLabels, StatusCodes: uriStatusCounts},
+		AvgRequestTime:   analyticsFloatSeries{Labels: latLabels, Values: latValues},
+		Methods:          methods,
+		TopIPs:           analyticsTopIPs{Labels: ipLabels, Values: ipValues, URLs: ipURLs},
+		Summary:          summary,
+	}
+	return snapshot, nil
 }
 
 func (s *AnalyticsService) RequestsOverTime(filters AnalyticsFilters) ([]string, []int, error) {
@@ -238,6 +456,118 @@ func (s *AnalyticsService) Methods(filters AnalyticsFilters) (map[string]int, er
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *AnalyticsService) TopIPs(filters AnalyticsFilters) ([]string, []int, [][]string, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT %s AS client_ip, COUNT(*) AS hits
+		FROM nginx_logs
+		%s
+		GROUP BY client_ip
+		ORDER BY hits DESC, client_ip ASC
+		LIMIT 50`, analyticsClientIPExpr(), whereClause)
+
+	rows, err := db.DB.Query(query, args...)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rows.Close()
+
+	labels := []string{}
+	values := []int{}
+	urls := [][]string{}
+	for rows.Next() {
+		var ip string
+		var hits int
+		if err := rows.Scan(&ip, &hits); err != nil {
+			return nil, nil, nil, err
+		}
+		ip = strings.TrimSpace(ip)
+		if !isValidIP(ip) {
+			continue
+		}
+		labels = append(labels, ip)
+		values = append(values, hits)
+		if len(labels) >= 10 {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	topURIsByIP, err := s.topURIsForIPs(filters, labels)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, ip := range labels {
+		urls = append(urls, topURIsByIP[ip])
+	}
+	return labels, values, urls, nil
+}
+
+func (s *AnalyticsService) topURIsForIPs(filters AnalyticsFilters, ips []string) (map[string][]string, error) {
+	if len(ips) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	whereClause, args := analyticsWhereClause(filters)
+	ipExpr := analyticsClientIPExpr()
+	placeholders := analyticsSQLPlaceholders(len(ips))
+	query := fmt.Sprintf(`
+		SELECT client_ip, uri, hits
+		FROM (
+			SELECT %s AS client_ip, uri, COUNT(*) AS hits
+			FROM nginx_logs
+			%s
+			GROUP BY %s, uri
+		) ip_uris
+		WHERE client_ip IN (%s)
+		ORDER BY client_ip ASC, hits DESC, uri ASC`, ipExpr, whereClause, ipExpr, placeholders)
+
+	queryArgs := make([]any, 0, len(args)+len(ips))
+	queryArgs = append(queryArgs, args...)
+	for _, ip := range ips {
+		queryArgs = append(queryArgs, ip)
+	}
+	rows, err := db.DB.Query(query, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	urlsByIP := make(map[string][]string, len(ips))
+	for rows.Next() {
+		var ip string
+		var uri string
+		var hits int
+		if err := rows.Scan(&ip, &uri, &hits); err != nil {
+			return nil, err
+		}
+		if len(urlsByIP[ip]) >= 5 {
+			continue
+		}
+		uri = strings.TrimSpace(uri)
+		if uri == "" {
+			uri = "(empty URI)"
+		}
+		urlsByIP[ip] = append(urlsByIP[ip], fmt.Sprintf("%s (%d)", uri, hits))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return urlsByIP, nil
+}
+
+func analyticsSQLPlaceholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	placeholders := make([]string, count)
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	return strings.Join(placeholders, ", ")
 }
 
 func (s *AnalyticsService) Summary(filters AnalyticsFilters) (AnalyticsSummary, error) {

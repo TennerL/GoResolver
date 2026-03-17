@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseAnalyticsFiltersParsesCustomQuery(t *testing.T) {
-	req := httptest.NewRequest("GET", "/api/analytics?range=1440&host=nihonsaba.net&method=post&status=404&status_class=4xx&uri_contains=wp-login&ip_contains=87.106.&filter=suspicious&from=2026-03-07T08:00&to=2026-03-07T09:00", nil)
+	req := httptest.NewRequest("GET", "/api/analytics?range=1440&host=nihonsaba.net&method=post&status=404&status_class=4xx&uri_contains=wp-login&ip_contains=87.106.&filter=suspicious&from=2026-03-07T08:00&to=2026-03-07T09:00&include_internal_api=1", nil)
 
 	filters := parseAnalyticsFilters(req)
 
@@ -34,6 +34,9 @@ func TestParseAnalyticsFiltersParsesCustomQuery(t *testing.T) {
 	if filters.Verdict != "suspicious" {
 		t.Fatalf("expected verdict suspicious, got %q", filters.Verdict)
 	}
+	if !filters.IncludeInternalAPI {
+		t.Fatal("expected include_internal_api to be enabled")
+	}
 	if filters.From.IsZero() || filters.To.IsZero() {
 		t.Fatal("expected explicit from/to timestamps to be parsed")
 	}
@@ -47,5 +50,18 @@ func TestAnalyticsQueryUsesCacheOnlyDefaults(t *testing.T) {
 
 	if analyticsQueryUsesCacheOnly(req.URL.Query()) {
 		t.Fatal("expected default range query to keep live lookups enabled")
+	}
+
+	filters := parseAnalyticsFilters(req)
+	if filters.IncludeInternalAPI {
+		t.Fatal("expected internal API routes to stay excluded by default")
+	}
+}
+
+func TestAnalyticsQueryUsesCacheOnlyIgnoresInternalAPIToggle(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/analytics?range=60&include_internal_api=1", nil)
+
+	if analyticsQueryUsesCacheOnly(req.URL.Query()) {
+		t.Fatal("expected internal API toggle alone to keep live lookups enabled")
 	}
 }

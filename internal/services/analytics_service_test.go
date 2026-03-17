@@ -59,19 +59,61 @@ func TestAnalyticsWhereClauseIncludesCustomFilters(t *testing.T) {
 		"status BETWEEN ? AND ?",
 		"uri LIKE ?",
 		"(remote_addr LIKE ? OR x_forwarded_for LIKE ?)",
+		"uri NOT LIKE ?",
 	} {
 		if !strings.Contains(whereClause, snippet) {
 			t.Fatalf("expected where clause to contain %q, got %q", snippet, whereClause)
 		}
 	}
-	if len(args) != 10 {
-		t.Fatalf("expected 10 query args, got %d", len(args))
+	if len(args) != 11 {
+		t.Fatalf("expected 11 query args, got %d", len(args))
 	}
 	if method, ok := args[3].(string); !ok || method != "GET" {
 		t.Fatalf("expected uppercase method arg GET, got %#v", args[3])
 	}
 	if like, ok := args[7].(string); !ok || like != "%/wp-login%" {
 		t.Fatalf("expected URI like arg, got %#v", args[7])
+	}
+	if internalAPIPattern, ok := args[10].(string); !ok || internalAPIPattern != "/api/%" {
+		t.Fatalf("expected internal API exclusion arg, got %#v", args[10])
+	}
+}
+
+func TestAnalyticsWhereClauseCanIncludeInternalAPI(t *testing.T) {
+	whereClause, _ := analyticsWhereClause(AnalyticsFilters{IncludeInternalAPI: true})
+
+	if strings.Contains(whereClause, "uri NOT LIKE ?") {
+		t.Fatalf("expected internal API exclusion to be disabled, got %q", whereClause)
+	}
+}
+
+func TestAnalyticsSQLPlaceholders(t *testing.T) {
+	if got := analyticsSQLPlaceholders(0); got != "" {
+		t.Fatalf("expected empty placeholder list, got %q", got)
+	}
+	if got := analyticsSQLPlaceholders(3); got != "?, ?, ?" {
+		t.Fatalf("expected three placeholders, got %q", got)
+	}
+}
+
+func TestAnalyticsSnapshotCacheKeyIgnoresCacheOnlyFlag(t *testing.T) {
+	from := time.Date(2026, 3, 7, 10, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC)
+
+	withLiveLookup := AnalyticsFilters{
+		RangeMinutes:       60,
+		Host:               "nihonsaba.net",
+		Method:             "GET",
+		From:               from,
+		To:                 to,
+		CacheOnly:          false,
+		IncludeInternalAPI: false,
+	}
+	withCacheOnly := withLiveLookup
+	withCacheOnly.CacheOnly = true
+
+	if analyticsSnapshotCacheKey(withLiveLookup) != analyticsSnapshotCacheKey(withCacheOnly) {
+		t.Fatal("expected snapshot cache key to ignore cache_only state for identical log filters")
 	}
 }
 
