@@ -22,11 +22,11 @@ func (s *ServerService) GetServers() []models.Server {
 	rows, err := db.DB.Query("SELECT id, domain_id, name, ip FROM servers ORDER BY id")
 	if err != nil {
 		log.Println("DB query error:", err)
-		return nil
+		return []models.Server{systemServer()}
 	}
 	defer rows.Close()
 
-	var servers []models.Server
+	servers := []models.Server{systemServer()}
 	for rows.Next() {
 		var srv models.Server
 		if err := rows.Scan(&srv.ID, &srv.Domain_ID, &srv.Name, &srv.IP); err != nil {
@@ -139,6 +139,10 @@ func (s *ServerService) AddServer(srv models.Server) error {
 }
 
 func (s *ServerService) DeleteServer(serverID string) error {
+	if IsSystemServerID(serverID) {
+		return fmt.Errorf("system server cannot be deleted")
+	}
+
 	tx, err := db.DB.Begin()
 	if err != nil {
 		return err

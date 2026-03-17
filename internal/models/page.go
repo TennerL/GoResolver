@@ -69,18 +69,21 @@ type RuleForm struct {
 }
 
 type PageDataServerConfig struct {
-	Active         string
-	View           string
-	Data           any
-	ServerID       string
-	ServerName     string
-	IP             string
-	VPN_File       string
-	ErrorPages     []ServerErrorPages
-	ErrorFiles     []ServerErrorFiles
-	Sites          []ServerConfiguration
-	IPTablesRules  []IPTablesRule
-	DDoSPolicy     DDoSPolicy
-	Fail2BanPolicy Fail2BanPolicy
-	Fail2BanBans   []Fail2BanBan
+	Active            string
+	View              string
+	Data              any
+	ServerID          string
+	ServerName        string
+	IP                string
+	IsSystemServer    bool
+	SystemNginxConfig string
+	SystemNginxSites  []SystemNginxSite
+	VPN_File          string
+	ErrorPages        []ServerErrorPages
+	ErrorFiles        []ServerErrorFiles
+	Sites             []ServerConfiguration
+	IPTablesRules     []IPTablesRule
+	DDoSPolicy        DDoSPolicy
+	Fail2BanPolicy    Fail2BanPolicy
+	Fail2BanBans      []Fail2BanBan
 }

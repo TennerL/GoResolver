@@ -8,11 +8,15 @@ import (
 	"strings"
 
 	"GoResolver/internal/models"
+	"GoResolver/internal/services"
 	"github.com/gorilla/mux"
 )
 
 type serverConfigurationUpdateData struct {
 	topServerName       string
+	systemNginxConfig   string
+	systemNginxImport   string
+	systemNginxSites    []models.SystemNginxSite
 	vpnIP               string
 	vpnBytes            []byte
 	ids                 []string
@@ -63,6 +67,9 @@ func loadServerConfigurationUpdateData(r *http.Request) serverConfigurationUpdat
 
 	return serverConfigurationUpdateData{
 		topServerName:       r.FormValue("top_server_name"),
+		systemNginxConfig:   r.FormValue("system_nginx_config"),
+		systemNginxImport:   r.FormValue("system_nginx_import"),
+		systemNginxSites:    loadSystemNginxSites(r),
 		vpnIP:               strings.TrimSpace(r.FormValue("vpn_ip")),
 		vpnBytes:            []byte(vpnText),
 		ids:                 r.Form["id[]"],
@@ -82,6 +89,89 @@ func loadServerConfigurationUpdateData(r *http.Request) serverConfigurationUpdat
 		errorFileCodes:      r.Form["error_code[]"],
 		errorFileTypes:      r.Form["response_type[]"],
 	}
+}
+
+func loadSystemNginxSites(r *http.Request) []models.SystemNginxSite {
+	ids := r.Form["system_site_id[]"]
+	serverNames := r.Form["system_site_server_name[]"]
+	listenPorts := r.Form["system_site_listen_port[]"]
+	sslEnabled := r.Form["system_site_ssl[]"]
+	http2Enabled := r.Form["system_site_http2[]"]
+	modes := r.Form["system_site_mode[]"]
+	certPaths := r.Form["system_site_cert_path[]"]
+	keyPaths := r.Form["system_site_key_path[]"]
+	sslConfigPaths := r.Form["system_site_ssl_config_path[]"]
+	sslDhParamPaths := r.Form["system_site_ssl_dhparam_path[]"]
+	rootPaths := r.Form["system_site_root_path[]"]
+	indexFiles := r.Form["system_site_index_files[]"]
+	proxyPassURLs := r.Form["system_site_proxy_pass_url[]"]
+	staticAliasPaths := r.Form["system_site_static_alias_path[]"]
+	phpEnabled := r.Form["system_site_php_enabled[]"]
+	phpSockets := r.Form["system_site_php_socket[]"]
+	phpMyAdminEnabled := r.Form["system_site_phpmyadmin_enabled[]"]
+	phpMyAdminSockets := r.Form["system_site_phpmyadmin_socket[]"]
+	proxyBufferingOff := r.Form["system_site_proxy_buffering_off[]"]
+	accessLogOffStatic := r.Form["system_site_access_log_off_static[]"]
+	staticExpires := r.Form["system_site_static_expires[]"]
+	staticCacheControl := r.Form["system_site_static_cache_control[]"]
+
+	rowCount := maxLen(
+		ids,
+		serverNames,
+		listenPorts,
+		sslEnabled,
+		http2Enabled,
+		modes,
+		certPaths,
+		keyPaths,
+		sslConfigPaths,
+		sslDhParamPaths,
+		rootPaths,
+		indexFiles,
+		proxyPassURLs,
+		staticAliasPaths,
+		phpEnabled,
+		phpSockets,
+		phpMyAdminEnabled,
+		phpMyAdminSockets,
+		proxyBufferingOff,
+		accessLogOffStatic,
+		staticExpires,
+		staticCacheControl,
+	)
+
+	sites := make([]models.SystemNginxSite, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		site := models.SystemNginxSite{
+			ID:                 strings.TrimSpace(valueAt(ids, i)),
+			ServerName:         strings.TrimSpace(valueAt(serverNames, i)),
+			ListenPort:         atoiOrZero(valueAt(listenPorts, i)),
+			SSL:                valueAt(sslEnabled, i) == "1",
+			HTTP2:              valueAt(http2Enabled, i) == "1",
+			Mode:               strings.TrimSpace(valueAt(modes, i)),
+			CertPath:           strings.TrimSpace(valueAt(certPaths, i)),
+			KeyPath:            strings.TrimSpace(valueAt(keyPaths, i)),
+			SSLConfigPath:      strings.TrimSpace(valueAt(sslConfigPaths, i)),
+			SSLDhParamPath:     strings.TrimSpace(valueAt(sslDhParamPaths, i)),
+			RootPath:           strings.TrimSpace(valueAt(rootPaths, i)),
+			IndexFiles:         strings.TrimSpace(valueAt(indexFiles, i)),
+			ProxyPassURL:       strings.TrimSpace(valueAt(proxyPassURLs, i)),
+			StaticAliasPath:    strings.TrimSpace(valueAt(staticAliasPaths, i)),
+			PHPEnabled:         valueAt(phpEnabled, i) == "1",
+			PHPSocket:          strings.TrimSpace(valueAt(phpSockets, i)),
+			PHPMyAdminEnabled:  valueAt(phpMyAdminEnabled, i) == "1",
+			PHPMyAdminSocket:   strings.TrimSpace(valueAt(phpMyAdminSockets, i)),
+			ProxyBufferingOff:  valueAt(proxyBufferingOff, i) == "1",
+			AccessLogOffStatic: valueAt(accessLogOffStatic, i) == "1",
+			StaticExpires:      strings.TrimSpace(valueAt(staticExpires, i)),
+			StaticCacheControl: strings.TrimSpace(valueAt(staticCacheControl, i)),
+		}
+		if site.ServerName == "" && site.ProxyPassURL == "" && site.RootPath == "" {
+			continue
+		}
+		sites = append(sites, site)
+	}
+	return sites
 }
 
 func (d serverConfigurationUpdateData) serverConfigurationRowAt(i int) serverConfigurationRow {
@@ -151,22 +241,24 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 	tab := r.FormValue("active_tab")
 	updateData := loadServerConfigurationUpdateData(r)
 
-	if err := h.saveServerConfigurationRows(serverID, updateData); err != nil {
-		log.Println("Save server configuration failed:", err)
-		http.Error(w, "Update failed", http.StatusInternalServerError)
-		return
-	}
+	if !services.IsSystemServerID(serverID) {
+		if err := h.saveServerConfigurationRows(serverID, updateData); err != nil {
+			log.Println("Save server configuration failed:", err)
+			http.Error(w, "Update failed", http.StatusInternalServerError)
+			return
+		}
 
-	if err := h.saveServerErrorPages(serverID, updateData); err != nil {
-		log.Println("Save error pages failed:", err)
-		http.Error(w, "Update failed", http.StatusInternalServerError)
-		return
-	}
+		if err := h.saveServerErrorPages(serverID, updateData); err != nil {
+			log.Println("Save error pages failed:", err)
+			http.Error(w, "Update failed", http.StatusInternalServerError)
+			return
+		}
 
-	if err := h.saveServerErrorFiles(updateData); err != nil {
-		log.Println("Update error files failed:", err)
-		http.Error(w, "Update failed", http.StatusInternalServerError)
-		return
+		if err := h.saveServerErrorFiles(updateData); err != nil {
+			log.Println("Update error files failed:", err)
+			http.Error(w, "Update failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err := h.applyDDoSFromForm(r, serverID); err != nil {
@@ -174,15 +266,33 @@ func (h *ServerConfigurationHandler) Update(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if services.IsSystemServerID(serverID) {
+		if strings.TrimSpace(updateData.systemNginxImport) != "" {
+			importedSites, rawRemainder, err := h.Service.ImportSystemNginxConfig(updateData.systemNginxImport)
+			if err != nil {
+				http.Error(w, "Failed to import system nginx config: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			updateData.systemNginxSites = importedSites
+			updateData.systemNginxConfig = rawRemainder
+		}
+		if err := h.Service.SaveSystemNginxConfig(updateData.systemNginxConfig, updateData.systemNginxSites); err != nil {
+			http.Error(w, "Failed to save system nginx config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	if err := h.applyFail2BanFromForm(r, serverID); err != nil {
 		http.Error(w, "Failed to apply Fail2Ban policy: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if err := h.assignStaticVPNIP(serverID, updateData.vpnIP); err != nil {
-		log.Println("Update VPN IP failed:", err)
-		http.Error(w, "Update VPN IP failed", http.StatusInternalServerError)
-		return
+	if !services.IsSystemServerID(serverID) {
+		if err := h.assignStaticVPNIP(serverID, updateData.vpnIP); err != nil {
+			log.Println("Update VPN IP failed:", err)
+			http.Error(w, "Update VPN IP failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	redirectWithTab(w, r, serverID, tab)

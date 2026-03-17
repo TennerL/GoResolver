@@ -162,13 +162,13 @@ export function ServersPageView({ page }) {
                 {servers.map((server) => (
                   <Table.Tr key={server.ID}>
                     <Table.Td><Code className="code-chip">{server.ID}</Code></Table.Td>
-                    <Table.Td fw={600}>{server.Name}</Table.Td>
+                    <Table.Td fw={600}>{server.Name}{server.IsSystem ? <Badge ml="sm" color="blue" variant="light">System</Badge> : null}</Table.Td>
                     <Table.Td><Code className="code-chip">{server.IP}</Code></Table.Td>
                     <Table.Td><StatusBadge status={server.Status || "Unknown"} /></Table.Td>
                     <Table.Td>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <Button component="a" href={`/servers/${server.ID}/server_configuration`} size="xs" variant="light">Configure</Button>
-                        <ActionForm action={`/servers/${server.ID}/delete`} fields={{}} confirmMessage="Delete this server?"><Button type="submit" size="xs" color="red" variant="subtle" leftSection={<IconTrash size={14} />}>Delete</Button></ActionForm>
+                        {!server.IsSystem ? <ActionForm action={`/servers/${server.ID}/delete`} fields={{}} confirmMessage="Delete this server?"><Button type="submit" size="xs" color="red" variant="subtle" leftSection={<IconTrash size={14} />}>Delete</Button></ActionForm> : null}
                       </div>
                     </Table.Td>
                   </Table.Tr>

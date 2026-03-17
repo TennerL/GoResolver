@@ -19,6 +19,29 @@ func (h *ServerConfigurationHandler) BuildPage(r *http.Request) (models.PageData
 	fail2banPolicy, _ := h.Service.GetFail2BanPolicy(serverID)
 	fail2banBans := h.Service.ListFail2BanBans(serverID)
 
+	if serverID == "0" {
+		srv, _ := h.Service.GetServerBasics(serverID)
+		page := models.PageDataServerConfig{
+			Active:            "servers",
+			View:              "serverconfiguration",
+			Data:              []models.ServerConfiguration{},
+			ServerID:          serverID,
+			ServerName:        srv.Name,
+			IP:                srv.IP,
+			IsSystemServer:    true,
+			SystemNginxConfig: h.Service.GetSystemNginxConfig(),
+			SystemNginxSites:  h.Service.GetSystemNginxSites(),
+			DDoSPolicy:        policy,
+			Fail2BanPolicy:    fail2banPolicy,
+			Fail2BanBans:      fail2banBans,
+		}
+		rules, err := h.Service.ListIPTablesRules()
+		if err == nil {
+			page.IPTablesRules = FilterRulesForServer(rules, serverID, srv.IP)
+		}
+		return page, http.StatusOK, nil
+	}
+
 	if len(conf) == 0 {
 		srv, err := h.Service.GetServerBasics(serverID)
 		if err != nil {
@@ -32,6 +55,7 @@ func (h *ServerConfigurationHandler) BuildPage(r *http.Request) (models.PageData
 			ServerID:       serverID,
 			ServerName:     srv.Name,
 			IP:             srv.IP,
+			IsSystemServer: srv.IsSystem,
 			VPN_File:       srv.VPN_File,
 			ErrorPages:     h.Service.GetServerErrorPages(serverID),
 			ErrorFiles:     h.Service.GetServerErrorFiles(),
@@ -61,6 +85,7 @@ func (h *ServerConfigurationHandler) BuildPage(r *http.Request) (models.PageData
 		ServerID:       serverID,
 		ServerName:     conf[0].Name,
 		IP:             conf[0].IP,
+		IsSystemServer: false,
 		VPN_File:       vpnText,
 		ErrorPages:     errorPages,
 		ErrorFiles:     errorFiles,

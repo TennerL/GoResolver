@@ -40,6 +40,54 @@ export function mapFail2Ban(policy) {
   return { Enabled: !!policy.Enabled, MaxRetry: String(policy.MaxRetry ?? ""), FindTimeSeconds: String(policy.FindTimeSeconds ?? ""), BanTimeSeconds: String(policy.BanTimeSeconds ?? ""), StatusCodes: policy.StatusCodes || "", IgnoreIPs: policy.IgnoreIPs || "", UseXForwardedFor: !!policy.UseXForwardedFor, BanGlobally: !!policy.BanGlobally };
 }
 
+export function mapSystemNginxSite(site) {
+  const serverName = site.ServerName ?? site.server_name ?? "";
+  const listenPort = site.ListenPort ?? site.listen_port ?? 443;
+  const ssl = site.SSL ?? site.ssl ?? false;
+  const http2 = site.HTTP2 ?? site.http2 ?? false;
+  const mode = site.Mode ?? site.mode ?? "proxy";
+  const certPath = site.CertPath ?? site.cert_path ?? "";
+  const keyPath = site.KeyPath ?? site.key_path ?? "";
+  const sslConfigPath = site.SSLConfigPath ?? site.ssl_config_path ?? "";
+  const sslDhParamPath = site.SSLDhParamPath ?? site.ssl_dhparam_path ?? "";
+  const rootPath = site.RootPath ?? site.root_path ?? "";
+  const indexFiles = site.IndexFiles ?? site.index_files ?? "index.php index.html";
+  const proxyPassURL = site.ProxyPassURL ?? site.proxy_pass_url ?? "";
+  const staticAliasPath = site.StaticAliasPath ?? site.static_alias_path ?? "";
+  const phpEnabled = site.PHPEnabled ?? site.php_enabled ?? false;
+  const phpSocket = site.PHPSocket ?? site.php_socket ?? "";
+  const phpMyAdminEnabled = site.PHPMyAdminEnabled ?? site.phpmyadmin_enabled ?? false;
+  const phpMyAdminSocket = site.PHPMyAdminSocket ?? site.phpmyadmin_socket ?? "";
+  const proxyBufferingOff = site.ProxyBufferingOff ?? site.proxy_buffering_off ?? false;
+  const accessLogOffStatic = site.AccessLogOffStatic ?? site.access_log_off_static ?? false;
+  const staticExpires = site.StaticExpires ?? site.static_expires ?? "1h";
+  const staticCacheControl = site.StaticCacheControl ?? site.static_cache_control ?? "public";
+  return {
+    ID: site.ID || "",
+    ServerName: serverName,
+    ListenPort: String(listenPort),
+    SSL: ssl ? "1" : "0",
+    HTTP2: http2 ? "1" : "0",
+    Mode: mode,
+    CertPath: certPath,
+    KeyPath: keyPath,
+    SSLConfigPath: sslConfigPath,
+    SSLDhParamPath: sslDhParamPath,
+    RootPath: rootPath,
+    IndexFiles: indexFiles,
+    ProxyPassURL: proxyPassURL,
+    StaticAliasPath: staticAliasPath,
+    PHPEnabled: phpEnabled ? "1" : "0",
+    PHPSocket: phpSocket,
+    PHPMyAdminEnabled: phpMyAdminEnabled ? "1" : "0",
+    PHPMyAdminSocket: phpMyAdminSocket,
+    ProxyBufferingOff: proxyBufferingOff ? "1" : "0",
+    AccessLogOffStatic: accessLogOffStatic ? "1" : "0",
+    StaticExpires: staticExpires,
+    StaticCacheControl: staticCacheControl
+  };
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -48,8 +96,9 @@ export function buildServerConfigFormState(page) {
   const sites = asArray(page?.Data).filter((item) => item?.Server_Name !== "dummy").map(mapSite);
   const errorPages = asArray(page?.ErrorPages).map(mapErrorPage);
   const errorFiles = asArray(page?.ErrorFiles).map(mapErrorFile);
+  const systemNginxSites = asArray(page?.SystemNginxSites).map(mapSystemNginxSite);
 
-  return { TopServerName: page.ServerName || "", VPNIP: page.IP || "", VPNFile: page.VPN_File || "", Sites: sites, NewSites: [], ErrorPages: errorPages, NewErrorPages: [], ErrorFiles: errorFiles, DDoS: mapDDoS(page.DDoSPolicy || {}), Fail2Ban: mapFail2Ban(page.Fail2BanPolicy || {}) };
+  return { TopServerName: page.ServerName || "", SystemNginxConfig: page.SystemNginxConfig || "", SystemNginxImport: "", SystemNginxSites: systemNginxSites, NewSystemNginxSites: [], VPNIP: page.IP || "", VPNFile: page.VPN_File || "", Sites: sites, NewSites: [], ErrorPages: errorPages, NewErrorPages: [], ErrorFiles: errorFiles, DDoS: mapDDoS(page.DDoSPolicy || {}), Fail2Ban: mapFail2Ban(page.Fail2BanPolicy || {}) };
 }
 
 export function emptySiteRow() {
@@ -58,6 +107,33 @@ export function emptySiteRow() {
 
 export function emptyErrorPageRow() {
   return { ID: "", Site_ID: "*", ErrorPage_ID: "", Enabled: "1" };
+}
+
+export function emptySystemNginxSiteRow() {
+  return {
+    ID: "",
+    ServerName: "",
+    ListenPort: "443",
+    SSL: "1",
+    HTTP2: "1",
+    Mode: "static",
+    CertPath: "",
+    KeyPath: "",
+    SSLConfigPath: "/etc/letsencrypt/options-ssl-nginx.conf",
+    SSLDhParamPath: "/etc/letsencrypt/ssl-dhparams.pem",
+    RootPath: "/var/www/html",
+    IndexFiles: "index.php index.html",
+    ProxyPassURL: "",
+    StaticAliasPath: "",
+    PHPEnabled: "0",
+    PHPSocket: "/run/php/php8.1-fpm.sock",
+    PHPMyAdminEnabled: "0",
+    PHPMyAdminSocket: "/run/php/phpmyadmin.sock",
+    ProxyBufferingOff: "1",
+    AccessLogOffStatic: "1",
+    StaticExpires: "1h",
+    StaticCacheControl: "public"
+  };
 }
 
 export function defaultRuleForm() {

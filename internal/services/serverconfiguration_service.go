@@ -152,6 +152,10 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 }
 
 func (s *ServerConfigurationService) GetServerBasics(serverID string) (models.Server, error) {
+	if IsSystemServerID(serverID) {
+		return systemServer(), nil
+	}
+
 	var srv models.Server
 	var vpnBlob []byte
 	err := db.DB.QueryRow(`
@@ -292,36 +296,32 @@ func (s *ServerConfigurationService) ApplyDDoSIptables(serverID string, p models
 	if serverID == "" {
 		return nil
 	}
-	var ip string
-	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
-		return err
-	}
-	localIP := isLocalIP(ip)
 
 	ddosPrefix := fmt.Sprintf("GoResolver:DDoS:%s:", serverID)
 	_ = s.DeleteRuleByComment("INPUT", "filter", ddosPrefix)
 
-	if !p.Enabled {
+	if !p.Enabled || !IsSystemServerID(serverID) {
 		return nil
+	}
+
+	ip, err := s.getServerIP(serverID)
+	if err != nil {
+		return err
 	}
 
 	ports := s.getServerPorts(serverID)
 	if len(ports) == 0 {
 		ports = []int{80, 443}
 	}
-	destIP := ""
-	if localIP && strings.TrimSpace(ip) != "" {
-		destIP = ip
-	}
 
 	whitelist := normalizeWhitelistEntries(p.Whitelist)
-	families, err := firewallFamiliesForServer(destIP, whitelist)
+	families, err := firewallFamiliesForServer(ip, whitelist)
 	if err != nil {
 		return err
 	}
 
 	for _, family := range families {
-		familyDestIP := firewallDestinationForFamily(destIP, family)
+		familyDestIP := s.resolveManagedRuleDestinationIP(serverID, ip, family)
 		familyWhitelist := filterIPsByFirewallFamily(whitelist, family)
 
 		if len(familyWhitelist) > 0 {

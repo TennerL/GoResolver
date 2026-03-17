@@ -53,3 +53,10 @@ func TestBuildFirewallRuleArgsUsesIPv6ConnlimitMask(t *testing.T) {
 		t.Fatalf("expected IPv6 connlimit mask 128, got %q", args[maskIndex+1])
 	}
 }
+
+func TestResolveLocalFirewallDestinationIPParsesURLHost(t *testing.T) {
+	got := resolveLocalFirewallDestinationIP(firewallFamilyIPv4, "http://127.0.0.1:8888")
+	if got != "127.0.0.1" {
+		t.Fatalf("resolveLocalFirewallDestinationIP() = %q, want %q", got, "127.0.0.1")
+	}
+}

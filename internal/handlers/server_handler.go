@@ -43,6 +43,10 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No id supplied", http.StatusBadRequest)
 		return
 	}
+	if serverID == "0" {
+		http.Error(w, "System server cannot be deleted", http.StatusBadRequest)
+		return
+	}
 
 	if err := h.Service.DeleteServer(serverID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

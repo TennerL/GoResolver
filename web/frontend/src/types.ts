@@ -35,6 +35,7 @@ export interface Server {
   IP: string;
   VPN_File: string;
   Status: string;
+  IsSystem?: boolean;
 }
 
 export interface SettingItem {
@@ -147,6 +148,32 @@ export interface Fail2BanBan {
   ExpiresAt: string;
 }
 
+export interface SystemNginxSite {
+  ID: string;
+  ServerName: string;
+  ListenPort: number;
+  SSL: boolean;
+  HTTP2: boolean;
+  Mode: string;
+  EnableDDoS: boolean;
+  CertPath: string;
+  KeyPath: string;
+  SSLConfigPath: string;
+  SSLDhParamPath: string;
+  RootPath: string;
+  IndexFiles: string;
+  ProxyPassURL: string;
+  StaticAliasPath: string;
+  PHPEnabled: boolean;
+  PHPSocket: string;
+  PHPMyAdminEnabled: boolean;
+  PHPMyAdminSocket: string;
+  ProxyBufferingOff: boolean;
+  AccessLogOffStatic: boolean;
+  StaticExpires: string;
+  StaticCacheControl: string;
+}
+
 export interface BasePage {
   Active: string;
   View: PageView;
@@ -195,6 +222,9 @@ export interface ServerConfigurationPage extends BasePage {
   ServerID: string;
   ServerName: string;
   IP: string;
+  IsSystemServer?: boolean;
+  SystemNginxConfig?: string;
+  SystemNginxSites?: SystemNginxSite[];
   VPN_File: string;
   ErrorPages: ServerErrorPage[];
   ErrorFiles: ServerErrorFile[];

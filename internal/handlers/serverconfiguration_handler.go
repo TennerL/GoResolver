@@ -451,6 +451,10 @@ func (h *ServerConfigurationHandler) CreateVPNConfig(w http.ResponseWriter, r *h
 		http.Error(w, "No server id supplied", http.StatusBadRequest)
 		return
 	}
+	if services.IsSystemServerID(serverID) {
+		http.Error(w, "VPN is not available for the system server", http.StatusBadRequest)
+		return
+	}
 
 	vpn_ip := r.FormValue("vpn_ip")
 	if vpn_ip == "" {
@@ -578,6 +582,10 @@ func (h *ServerConfigurationHandler) applyDDoSFromForm(r *http.Request, serverID
 
 	if err := h.Service.ApplyDDoSIptables(serverID, policy); err != nil {
 		return err
+	}
+
+	if services.IsSystemServerID(serverID) {
+		return h.Service.DeploySystemNginxConfig()
 	}
 
 	conf := h.Service.GetServerConfiguration(serverID)

@@ -4,6 +4,7 @@ import (
 	"GoResolver/internal/models"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -302,4 +303,94 @@ func firewallHashSuffix(family string) string {
 		return "v6"
 	}
 	return "v4"
+}
+
+func localFirewallDestinationCandidates(family string) []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	preferred := []string{}
+	fallback := []string{}
+	seen := map[string]struct{}{}
+
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip := addrIP(addr)
+			if ip == nil {
+				continue
+			}
+			if family == firewallFamilyIPv4 {
+				ip = ip.To4()
+				if ip == nil {
+					continue
+				}
+			} else {
+				if ip.To4() != nil || ip.To16() == nil {
+					continue
+				}
+			}
+
+			value := ip.String()
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				fallback = append(fallback, value)
+				continue
+			}
+			preferred = append(preferred, value)
+		}
+	}
+
+	return append(preferred, fallback...)
+}
+
+func resolveLocalFirewallDestinationIP(family string, rawCandidates ...string) string {
+	for _, raw := range rawCandidates {
+		host := strings.TrimSpace(raw)
+		if host == "" {
+			continue
+		}
+		if strings.Contains(host, "://") {
+			if parsed, err := url.Parse(host); err == nil && parsed.Hostname() != "" {
+				host = strings.TrimSpace(parsed.Hostname())
+			}
+		}
+		if host == "" {
+			continue
+		}
+
+		if ip := net.ParseIP(host); ip != nil {
+			resolved := firewallDestinationForFamily(ip.String(), family)
+			if resolved != "" && isLocalIP(resolved) {
+				return resolved
+			}
+			continue
+		}
+
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			resolved := firewallDestinationForFamily(ip.String(), family)
+			if resolved != "" && isLocalIP(resolved) {
+				return resolved
+			}
+		}
+	}
+
+	candidates := localFirewallDestinationCandidates(family)
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
 }

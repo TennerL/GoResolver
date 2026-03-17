@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -290,7 +289,8 @@ func (s *ServerConfigurationService) applyFail2BanPolicy(p models.Fail2BanPolicy
 	if err != nil {
 		return err
 	}
-	if len(hosts) == 0 {
+	effectiveHosts := fail2BanEffectiveHosts(p, hosts)
+	if !p.BanGlobally && len(effectiveHosts) == 0 {
 		return nil
 	}
 
@@ -300,7 +300,7 @@ func (s *ServerConfigurationService) applyFail2BanPolicy(p models.Fail2BanPolicy
 	}
 
 	ignoreMatchers := parseIPMatchers(p.IgnoreIPs)
-	offenders, err := s.findFail2BanOffenders(p, hosts, statuses)
+	offenders, err := s.findFail2BanOffenders(p, effectiveHosts, statuses)
 	if err != nil {
 		return err
 	}
@@ -326,9 +326,7 @@ type fail2banOffender struct {
 }
 
 func (s *ServerConfigurationService) findFail2BanOffenders(p models.Fail2BanPolicy, hosts []string, statuses []int) ([]fail2banOffender, error) {
-	// Always use the server-observed client IP from nginx logs.
-	// We intentionally ignore X-Forwarded-For here to avoid trusting proxy headers.
-	ipExpr := "remote_addr"
+	ipExpr := fail2BanClientIPExpr(p)
 
 	query := fmt.Sprintf(`SELECT %s AS ip, COUNT(*) AS hits FROM nginx_logs WHERE time >= NOW() - INTERVAL ? SECOND`, ipExpr)
 	args := []any{p.FindTimeSeconds}
@@ -392,12 +390,7 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 	comment := fail2BanRuleComment(p.ServerID, ip)
 	chain := "INPUT"
 	sourceIP := ip
-	destIP := firewallDestinationForFamily(serverIP, family)
-	if p.BanGlobally {
-		if resolved := s.resolveLocalBanDestinationIP(family); resolved != "" {
-			destIP = resolved
-		}
-	}
+	destIP := s.resolveFail2BanDestinationIP(p.ServerID, serverIP, family)
 	if err := s.AddRule(models.IPTablesRuleSpec{
 		Family:   family,
 		Table:    "filter",
@@ -474,6 +467,10 @@ func (s *ServerConfigurationService) getServerHosts(serverID string) ([]string, 
 }
 
 func (s *ServerConfigurationService) getServerIP(serverID string) (string, error) {
+	if IsSystemServerID(serverID) {
+		return systemServer().IP, nil
+	}
+
 	var ip string
 	if err := db.DB.QueryRow(`SELECT ip FROM servers WHERE id = ?`, serverID).Scan(&ip); err != nil {
 		return "", err
@@ -568,51 +565,39 @@ func fail2BanRuleComment(serverID, ip string) string {
 	return fmt.Sprintf("GoResolver:Fail2Ban:%s:%s", serverID, ip)
 }
 
-func (s *ServerConfigurationService) resolveLocalBanDestinationIP(family string) string {
+func fail2BanClientIPExpr(p models.Fail2BanPolicy) string {
+	if p.UseXForwardedFor {
+		return analyticsClientIPExpr()
+	}
+	return "TRIM(remote_addr)"
+}
+
+func fail2BanEffectiveHosts(p models.Fail2BanPolicy, hosts []string) []string {
+	if p.BanGlobally || IsSystemServerID(p.ServerID) {
+		return nil
+	}
+	return hosts
+}
+
+func (s *ServerConfigurationService) resolveManagedRuleDestinationIP(serverID, serverIP, family string) string {
+	if !IsSystemServerID(serverID) {
+		return firewallDestinationForFamily(serverIP, family)
+	}
 	settings := NewSettingsService()
-	candidates := []string{
+	return resolveLocalFirewallDestinationIP(
+		family,
 		strings.TrimSpace(settings.GetValue("app.base_url")),
 		strings.TrimSpace(settings.GetValue("openvpn.remote_host")),
+	)
+}
+
+func (s *ServerConfigurationService) resolveFail2BanDestinationIP(serverID, serverIP, family string) string {
+	if resolved := resolveLocalFirewallDestinationIP(
+		family,
+		NewSettingsService().GetValue("app.base_url"),
+		NewSettingsService().GetValue("openvpn.remote_host"),
+	); resolved != "" {
+		return resolved
 	}
-	for _, raw := range candidates {
-		if raw == "" {
-			continue
-		}
-		host := raw
-		if strings.Contains(raw, "://") {
-			if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
-				host = u.Hostname()
-			}
-		}
-		host = strings.TrimSpace(host)
-		if host == "" {
-			continue
-		}
-		if ip := net.ParseIP(host); ip != nil {
-			if family == firewallFamilyIPv4 {
-				if v4 := ip.To4(); v4 != nil {
-					return v4.String()
-				}
-			} else if ip.To16() != nil && ip.To4() == nil {
-				return ip.String()
-			}
-			continue
-		}
-		ips, err := net.LookupIP(host)
-		if err != nil {
-			continue
-		}
-		for _, ip := range ips {
-			if family == firewallFamilyIPv4 {
-				if v4 := ip.To4(); v4 != nil {
-					return v4.String()
-				}
-				continue
-			}
-			if ip.To16() != nil && ip.To4() == nil {
-				return ip.String()
-			}
-		}
-	}
-	return ""
+	return s.resolveManagedRuleDestinationIP(serverID, serverIP, family)
 }
