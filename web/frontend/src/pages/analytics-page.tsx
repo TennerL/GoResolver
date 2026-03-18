@@ -33,7 +33,6 @@ const emptyAnalytics = {
 
 const emptyObservability = {
   alerts: [],
-  incidents: [],
   retention_days: 30
 };
 
@@ -169,6 +168,10 @@ function buildAlertsUrl(filters) {
   return `/api/analytics/alerts?${buildAnalyticsQuery(filters)}`;
 }
 
+function buildIncidentsUrl() {
+  return "/api/analytics/incidents";
+}
+
 function buildLogsUrl(filters, limit = 50, offset = 0) {
   const params = new URLSearchParams(buildAnalyticsQuery(filters));
   params.set("limit", String(limit));
@@ -265,6 +268,7 @@ export function AnalyticsPageView() {
   const [hosts, setHosts] = useState([]);
   const [analytics, setAnalytics] = useState(emptyAnalytics);
   const [observability, setObservability] = useState(emptyObservability);
+  const [incidents, setIncidents] = useState([]);
   const [ips, setIps] = useState([]);
   const [points, setPoints] = useState([]);
   const [logs, setLogs] = useState(emptyLogSearch);
@@ -277,12 +281,12 @@ export function AnalyticsPageView() {
   const filterBadges = useMemo(() => summarizeFilters(filters), [filters]);
   const cacheOnly = !!analytics?.cache_only;
   const activeIncidents = useMemo(
-    () => (observability.incidents || []).filter((incident) => incident.status === "open"),
-    [observability.incidents]
+    () => (incidents || []).filter((incident) => incident.status === "open"),
+    [incidents]
   );
   const incidentHistory = useMemo(
-    () => (observability.incidents || []).filter((incident) => incident.status !== "open"),
-    [observability.incidents]
+    () => (incidents || []).filter((incident) => incident.status !== "open"),
+    [incidents]
   );
 
   const updateDraft = (key, value) => {
@@ -379,11 +383,12 @@ export function AnalyticsPageView() {
       inFlightRef.current = true;
       setLoading(true);
       try {
-        const [nextAnalytics, nextIps, nextPoints, nextObservability, nextLogs] = await Promise.all([
+        const [nextAnalytics, nextIps, nextPoints, nextObservability, nextIncidents, nextLogs] = await Promise.all([
           fetchJSON(buildAnalyticsUrl(filters), { signal: controller.signal }),
           fetchJSON(buildIPsUrl(filters), { signal: controller.signal }),
           fetchJSON(buildGeoUrl(filters), { signal: controller.signal }),
           fetchJSON(buildAlertsUrl(filters), { signal: controller.signal }),
+          fetchJSON(buildIncidentsUrl(), { signal: controller.signal }),
           fetchJSON(buildLogsUrl(filters, 50, 0), { signal: controller.signal })
         ]);
 
@@ -393,6 +398,7 @@ export function AnalyticsPageView() {
         setIps(Array.isArray(nextIps) ? nextIps : []);
         setPoints(Array.isArray(nextPoints) ? nextPoints : []);
         setObservability(nextObservability && typeof nextObservability === "object" ? { ...emptyObservability, ...nextObservability } : emptyObservability);
+        setIncidents(Array.isArray(nextIncidents) ? nextIncidents : []);
         setLogs(nextLogs && typeof nextLogs === "object" ? { ...emptyLogSearch, ...nextLogs } : emptyLogSearch);
         setLastLoadedAt(new Date().toISOString());
       } catch (error) {
@@ -511,7 +517,7 @@ export function AnalyticsPageView() {
                 </Group>
               </Group>
             </Paper>
-          )) : <Text size="sm" c="dimmed">No tracked incidents yet.</Text>}
+          )) : <Text size="sm" c="dimmed">{incidentHistory.length ? "No open incidents. Recent items are available in history below." : "No tracked incidents yet."}</Text>}
           <Accordion variant="separated" radius="lg" mt="md">
             <Accordion.Item value="incident-history">
               <Accordion.Control>
