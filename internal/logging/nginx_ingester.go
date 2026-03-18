@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"GoResolver/internal/services"
 	"bufio"
 	"bytes"
 	"database/sql"
@@ -9,6 +10,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +31,13 @@ type NginxLog struct {
 	Host          string  `json:"host"`
 	RayID         string  `json:"ray_id"`
 }
+
+var (
+	retentionMu      sync.Mutex
+	lastRetentionRun time.Time
+	alertEvalMu      sync.Mutex
+	lastAlertEvalRun time.Time
+)
 
 func StartNginxLogIngester(db *sql.DB, path string) {
 	ensureNginxLogsSchema(db)
@@ -200,6 +211,9 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 	if err := tx.Commit(); err != nil {
 		log.Println("commit error:", err)
 	}
+
+	maybePruneOldLogs(db)
+	maybeEvaluateAnalyticsAlerts()
 }
 
 func parseNginxTime(ts string) (time.Time, error) {
@@ -227,4 +241,55 @@ func parseUpstreamTime(s string) (float64, error) {
 		return 0, err
 	}
 	return f, nil
+}
+
+func maybePruneOldLogs(db *sql.DB) {
+	retentionMu.Lock()
+	defer retentionMu.Unlock()
+
+	now := time.Now().UTC()
+	if !lastRetentionRun.IsZero() && now.Sub(lastRetentionRun) < 15*time.Minute {
+		return
+	}
+	lastRetentionRun = now
+
+	retentionDays := getAnalyticsRetentionDays(db)
+	if retentionDays <= 0 {
+		return
+	}
+
+	cutoff := now.AddDate(0, 0, -retentionDays)
+	if _, err := db.Exec("DELETE FROM nginx_logs WHERE `time` < ?", cutoff); err != nil {
+		log.Printf("analytics retention cleanup failed: %v", err)
+	}
+}
+
+func getAnalyticsRetentionDays(db *sql.DB) int {
+	var raw string
+	err := db.QueryRow("SELECT setting_value FROM app_settings WHERE setting_key = 'analytics.retention_days'").Scan(&raw)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return 30
+	}
+	value, convErr := strconv.Atoi(strings.TrimSpace(raw))
+	if convErr != nil {
+		return 30
+	}
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func maybeEvaluateAnalyticsAlerts() {
+	alertEvalMu.Lock()
+	defer alertEvalMu.Unlock()
+
+	now := time.Now().UTC()
+	if !lastAlertEvalRun.IsZero() && now.Sub(lastAlertEvalRun) < 5*time.Minute {
+		return
+	}
+	lastAlertEvalRun = now
+
+	service := services.NewAnalyticsService()
+	_, _ = service.Observability(services.AnalyticsFilters{RangeMinutes: 60})
 }

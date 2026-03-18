@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseAnalyticsFiltersParsesCustomQuery(t *testing.T) {
-	req := httptest.NewRequest("GET", "/api/analytics?range=1440&host=nihonsaba.net&method=post&status=404&status_class=4xx&uri_contains=wp-login&ip_contains=87.106.&filter=suspicious&from=2026-03-07T08:00&to=2026-03-07T09:00&include_internal_api=1", nil)
+	req := httptest.NewRequest("GET", "/api/analytics?range=1440&host=nihonsaba.net&method=post&status=404&status_class=4xx&uri_contains=wp-login&ip_contains=87.106.&isp_contains=hetzner&filter=suspicious&from=2026-03-07T08:00&to=2026-03-07T09:00&include_internal_api=1", nil)
 
 	filters := parseAnalyticsFilters(req)
 
@@ -30,6 +30,9 @@ func TestParseAnalyticsFiltersParsesCustomQuery(t *testing.T) {
 	}
 	if filters.IPContains != "87.106." {
 		t.Fatalf("expected IP contains filter, got %q", filters.IPContains)
+	}
+	if filters.ISPContains != "hetzner" {
+		t.Fatalf("expected ISP contains filter, got %q", filters.ISPContains)
 	}
 	if filters.Verdict != "suspicious" {
 		t.Fatalf("expected verdict suspicious, got %q", filters.Verdict)
@@ -63,5 +66,13 @@ func TestAnalyticsQueryUsesCacheOnlyIgnoresInternalAPIToggle(t *testing.T) {
 
 	if analyticsQueryUsesCacheOnly(req.URL.Query()) {
 		t.Fatal("expected internal API toggle alone to keep live lookups enabled")
+	}
+}
+
+func TestAnalyticsQueryUsesCacheOnlyForQuickSearch(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/analytics?range=60&q=hetzner", nil)
+
+	if !analyticsQueryUsesCacheOnly(req.URL.Query()) {
+		t.Fatal("expected quick search to enable cache-only mode")
 	}
 }

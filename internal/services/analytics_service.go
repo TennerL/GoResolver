@@ -34,8 +34,10 @@ type AnalyticsFilters struct {
 	Method             string
 	Status             int
 	StatusClass        string
+	QuickSearch        string
 	URIContains        string
 	IPContains         string
+	ISPContains        string
 	Verdict            string
 	From               time.Time
 	To                 time.Time
@@ -99,8 +101,10 @@ func normalizeAnalyticsFilters(filters AnalyticsFilters) AnalyticsFilters {
 	filters.Host = strings.TrimSpace(filters.Host)
 	filters.Method = strings.ToUpper(strings.TrimSpace(filters.Method))
 	filters.StatusClass = normalizeStatusClass(filters.StatusClass)
+	filters.QuickSearch = strings.TrimSpace(filters.QuickSearch)
 	filters.URIContains = strings.TrimSpace(filters.URIContains)
 	filters.IPContains = strings.TrimSpace(filters.IPContains)
+	filters.ISPContains = strings.TrimSpace(filters.ISPContains)
 	filters.Verdict = strings.ToLower(strings.TrimSpace(filters.Verdict))
 
 	if filters.RangeMinutes <= 0 {
@@ -179,14 +183,23 @@ func analyticsWhereClause(filters AnalyticsFilters) (string, []any) {
 		conditions = append(conditions, "status BETWEEN ? AND ?")
 		args = append(args, base, base+99)
 	}
+	if filters.QuickSearch != "" {
+		like := "%" + filters.QuickSearch + "%"
+		conditions = append(conditions, fmt.Sprintf("(host LIKE ? OR uri LIKE ? OR method LIKE ? OR %s LIKE ? OR EXISTS (SELECT 1 FROM ip_geolocation geo WHERE geo.ip = %s AND geo.isp LIKE ?))", analyticsClientIPExpr(), analyticsClientIPExpr()))
+		args = append(args, like, like, like, like, like)
+	}
 	if filters.URIContains != "" {
 		conditions = append(conditions, "uri LIKE ?")
 		args = append(args, "%"+filters.URIContains+"%")
 	}
 	if filters.IPContains != "" {
 		like := "%" + filters.IPContains + "%"
-		conditions = append(conditions, "(remote_addr LIKE ? OR x_forwarded_for LIKE ?)")
-		args = append(args, like, like)
+		conditions = append(conditions, "remote_addr LIKE ?")
+		args = append(args, like)
+	}
+	if filters.ISPContains != "" {
+		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM ip_geolocation geo WHERE geo.ip = %s AND geo.isp LIKE ?)", analyticsClientIPExpr()))
+		args = append(args, "%"+filters.ISPContains+"%")
 	}
 	if !filters.IncludeInternalAPI {
 		conditions = append(conditions, "uri NOT LIKE ?")
@@ -197,7 +210,7 @@ func analyticsWhereClause(filters AnalyticsFilters) (string, []any) {
 }
 
 func analyticsClientIPExpr() string {
-	return "CASE WHEN TRIM(COALESCE(SUBSTRING_INDEX(x_forwarded_for, ',', 1), '')) <> '' THEN TRIM(SUBSTRING_INDEX(x_forwarded_for, ',', 1)) ELSE TRIM(remote_addr) END"
+	return "TRIM(remote_addr)"
 }
 
 func analyticsSnapshotCacheKey(filters AnalyticsFilters) string {
@@ -208,8 +221,10 @@ func analyticsSnapshotCacheKey(filters AnalyticsFilters) string {
 		filters.Method,
 		strconv.Itoa(filters.Status),
 		filters.StatusClass,
+		filters.QuickSearch,
 		filters.URIContains,
 		filters.IPContains,
+		filters.ISPContains,
 		filters.Verdict,
 		filters.From.Format(time.RFC3339Nano),
 		filters.To.Format(time.RFC3339Nano),
@@ -785,7 +800,7 @@ func (s *AnalyticsService) EnsureIPGeoTable() error {
 func (s *AnalyticsService) UniqueIPs(filters AnalyticsFilters) ([]string, error) {
 	whereClause, args := analyticsWhereClause(filters)
 	query := fmt.Sprintf(`
-		SELECT remote_addr, x_forwarded_for
+		SELECT remote_addr
 		FROM nginx_logs
 		%s
 	`, whereClause)
@@ -798,14 +813,11 @@ func (s *AnalyticsService) UniqueIPs(filters AnalyticsFilters) ([]string, error)
 
 	ipSet := map[string]struct{}{}
 	for rows.Next() {
-		var remoteAddr, xff string
-		if err := rows.Scan(&remoteAddr, &xff); err != nil {
+		var remoteAddr string
+		if err := rows.Scan(&remoteAddr); err != nil {
 			return nil, err
 		}
-		candidate := firstIPFromXFF(xff)
-		if candidate == "" {
-			candidate = strings.TrimSpace(remoteAddr)
-		}
+		candidate := strings.TrimSpace(remoteAddr)
 		if !isValidIP(candidate) {
 			continue
 		}
@@ -1138,17 +1150,6 @@ func parseIntSetting(raw string, fallback int) int {
 	return fallback
 }
 
-func firstIPFromXFF(xff string) string {
-	if xff == "" {
-		return ""
-	}
-	parts := strings.Split(xff, ",")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(parts[0])
-}
-
 func isValidIP(ip string) bool {
 	parsed := net.ParseIP(strings.TrimSpace(ip))
 	return parsed != nil
@@ -1157,7 +1158,7 @@ func isValidIP(ip string) bool {
 func (s *AnalyticsService) IPHosts(filters AnalyticsFilters) (map[string][]string, error) {
 	whereClause, args := analyticsWhereClause(filters)
 	query := fmt.Sprintf(`
-		SELECT remote_addr, x_forwarded_for, host
+		SELECT remote_addr, host
 		FROM nginx_logs
 		%s
 	`, whereClause)
@@ -1170,14 +1171,11 @@ func (s *AnalyticsService) IPHosts(filters AnalyticsFilters) (map[string][]strin
 
 	hostMap := map[string]map[string]struct{}{}
 	for rows.Next() {
-		var remoteAddr, xff, hostName string
-		if err := rows.Scan(&remoteAddr, &xff, &hostName); err != nil {
+		var remoteAddr, hostName string
+		if err := rows.Scan(&remoteAddr, &hostName); err != nil {
 			return nil, err
 		}
-		candidate := firstIPFromXFF(xff)
-		if candidate == "" {
-			candidate = strings.TrimSpace(remoteAddr)
-		}
+		candidate := strings.TrimSpace(remoteAddr)
 		if !isValidIP(candidate) {
 			continue
 		}

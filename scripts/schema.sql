@@ -196,3 +196,22 @@ CREATE TABLE IF NOT EXISTS ip_geolocation (
     checked_at DATETIME NOT NULL,
     source VARCHAR(32) NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS analytics_incidents (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    fingerprint VARCHAR(191) NOT NULL UNIQUE,
+    status VARCHAR(32) NOT NULL,
+    severity VARCHAR(32) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    summary TEXT NOT NULL,
+    current_value VARCHAR(255) NOT NULL,
+    threshold_value VARCHAR(255) NOT NULL,
+    context_json LONGTEXT NOT NULL,
+    first_seen DATETIME NOT NULL,
+    last_seen DATETIME NOT NULL,
+    last_notified_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_analytics_incidents_status (status),
+    INDEX idx_analytics_incidents_last_seen (last_seen)
+);

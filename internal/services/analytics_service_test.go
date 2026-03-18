@@ -48,6 +48,7 @@ func TestAnalyticsWhereClauseIncludesCustomFilters(t *testing.T) {
 		StatusClass:  "4xx",
 		URIContains:  "/wp-login",
 		IPContains:   "87.106.",
+		ISPContains:  "hetzner",
 	}
 
 	whereClause, args := analyticsWhereClause(filters)
@@ -58,7 +59,8 @@ func TestAnalyticsWhereClauseIncludesCustomFilters(t *testing.T) {
 		"status = ?",
 		"status BETWEEN ? AND ?",
 		"uri LIKE ?",
-		"(remote_addr LIKE ? OR x_forwarded_for LIKE ?)",
+		"remote_addr LIKE ?",
+		"geo.isp LIKE ?",
 		"uri NOT LIKE ?",
 	} {
 		if !strings.Contains(whereClause, snippet) {
@@ -73,6 +75,12 @@ func TestAnalyticsWhereClauseIncludesCustomFilters(t *testing.T) {
 	}
 	if like, ok := args[7].(string); !ok || like != "%/wp-login%" {
 		t.Fatalf("expected URI like arg, got %#v", args[7])
+	}
+	if ipLike, ok := args[8].(string); !ok || ipLike != "%87.106.%" {
+		t.Fatalf("expected IP like arg, got %#v", args[8])
+	}
+	if ispLike, ok := args[9].(string); !ok || ispLike != "%hetzner%" {
+		t.Fatalf("expected ISP like arg, got %#v", args[9])
 	}
 	if internalAPIPattern, ok := args[10].(string); !ok || internalAPIPattern != "/api/%" {
 		t.Fatalf("expected internal API exclusion arg, got %#v", args[10])

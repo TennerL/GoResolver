@@ -415,7 +415,20 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 			expires_at = VALUES(expires_at),
 			reason = VALUES(reason)
 	`, p.ServerID, ip, hits, now, expires, fmt.Sprintf("status=%s", p.StatusCodes))
-	return err
+	if err != nil {
+		return err
+	}
+
+	if shouldNotifyFail2BanBan() {
+		_ = sendFail2BanBanMail(buildFail2BanMailData(
+			p.ServerID,
+			ip,
+			hits,
+			expires,
+			formatFail2BanReason(p.StatusCodes),
+		))
+	}
+	return nil
 }
 
 func (s *ServerConfigurationService) cleanupExpiredFail2BanBans() error {
@@ -566,6 +579,9 @@ func fail2BanRuleComment(serverID, ip string) string {
 }
 
 func fail2BanClientIPExpr(p models.Fail2BanPolicy) string {
+	// This remains configurable because some deployments intentionally ban on the
+	// original client IP forwarded by a trusted upstream. Analytics stays pinned
+	// to remote_addr to avoid skewing charts with spoofed X-Forwarded-For values.
 	if p.UseXForwardedFor {
 		return analyticsClientIPExpr()
 	}

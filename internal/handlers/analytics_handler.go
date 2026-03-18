@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"GoResolver/internal/services"
+	"github.com/gorilla/mux"
 )
 
 type AnalyticsHandler struct {
@@ -60,7 +61,11 @@ func analyticsQueryUsesCacheOnly(qValues map[string][]string) bool {
 			if value != "" && value != defaultRange {
 				return true
 			}
-		case "host", "filter", "method", "status", "status_class", "uri_contains", "ip_contains", "from", "to":
+		case "host", "filter", "method", "status", "status_class", "q", "uri_contains", "ip_contains", "from", "to":
+			if value != "" {
+				return true
+			}
+		case "isp_contains":
 			if value != "" {
 				return true
 			}
@@ -76,8 +81,10 @@ func parseAnalyticsFilters(r *http.Request) services.AnalyticsFilters {
 		Host:               strings.TrimSpace(q.Get("host")),
 		Method:             strings.TrimSpace(q.Get("method")),
 		StatusClass:        strings.TrimSpace(q.Get("status_class")),
+		QuickSearch:        strings.TrimSpace(q.Get("q")),
 		URIContains:        strings.TrimSpace(q.Get("uri_contains")),
 		IPContains:         strings.TrimSpace(q.Get("ip_contains")),
+		ISPContains:        strings.TrimSpace(q.Get("isp_contains")),
 		Verdict:            strings.TrimSpace(q.Get("filter")),
 		CacheOnly:          analyticsQueryUsesCacheOnly(q),
 		IncludeInternalAPI: strings.EqualFold(strings.TrimSpace(q.Get("include_internal_api")), "true") || strings.TrimSpace(q.Get("include_internal_api")) == "1",
@@ -140,4 +147,76 @@ func (h *AnalyticsHandler) IPGeo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, points)
+}
+
+func (h *AnalyticsHandler) Alerts(w http.ResponseWriter, r *http.Request) {
+	filters := parseAnalyticsFilters(r)
+	observability, err := h.Service.Observability(filters)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, observability)
+}
+
+func (h *AnalyticsHandler) Logs(w http.ResponseWriter, r *http.Request) {
+	filters := parseAnalyticsFilters(r)
+	q := r.URL.Query()
+	limit := 100
+	offset := 0
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if v := strings.TrimSpace(q.Get("offset")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	result, err := h.Service.LogSearch(filters, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *AnalyticsHandler) IPProfile(w http.ResponseWriter, r *http.Request) {
+	ip := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if ip == "" {
+		http.Error(w, "missing ip", http.StatusBadRequest)
+		return
+	}
+	filters := parseAnalyticsFilters(r)
+	profile, err := h.Service.IPProfile(ip, filters)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (h *AnalyticsHandler) Incidents(w http.ResponseWriter, r *http.Request) {
+	incidents, err := h.Service.Incidents()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, incidents)
+}
+
+func (h *AnalyticsHandler) DismissIncident(w http.ResponseWriter, r *http.Request) {
+	rawID := strings.TrimSpace(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid incident id", http.StatusBadRequest)
+		return
+	}
+	if err := h.Service.DismissIncident(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }

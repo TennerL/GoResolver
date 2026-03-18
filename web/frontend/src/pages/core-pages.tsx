@@ -1,6 +1,6 @@
 import { ActionIcon, Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Text, TextInput, Textarea, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { ActionForm, EmptyState, PageHeader, StatusBadge } from "../common";
+import { ActionForm, EmptyState, PageHeader, StatusBadge, useSPA } from "../common";
 import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconSearch, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
 import { useDeferredValue, useMemo, useState } from "react";
 
@@ -192,6 +192,7 @@ export function ServersPageView({ page }) {
 }
 
 export function SettingsPageView({ page }) {
+  const spa = useSPA();
   const items = Array.isArray(page.Data?.Items) ? page.Data.Items : [];
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -215,9 +216,25 @@ export function SettingsPageView({ page }) {
       window.alert("Clipboard access denied.");
     }
   };
+  const sendTestMail = async () => {
+    try {
+      const response = await fetch("/api/settings/test_mail", { method: "POST" });
+      await spa.handleMutationResponse(response);
+      window.alert("Test mail sent.");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Test mail failed.");
+    }
+  };
   return (
     <Container fluid>
-      <PageHeader title="Settings" description="Edit runtime settings without repeating the form markup across templates." actions={page.Data?.Saved ? <Badge color="teal">Saved</Badge> : null} />
+      <PageHeader
+        title="Settings"
+        description="Edit runtime settings without repeating the form markup across templates."
+        actions={<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="light" color="gray" onClick={() => void sendTestMail()}>Send Test Mail</Button>
+          {page.Data?.Saved ? <Badge color="teal">Saved</Badge> : null}
+        </div>}
+      />
       <Stack gap="lg">
         <Paper radius="xl" p="lg" className="soft-panel settings-toolbar">
           <Stack gap="sm">
@@ -264,7 +281,19 @@ export function SettingsPageView({ page }) {
                           <div><Text fw={600}>{item.Label}</Text>{item.Help ? <Text size="sm" c="dimmed">{item.Help}</Text> : null}</div>
                           {item.ReadOnly ? <Button type="button" variant="light" color="gray" onClick={() => void copyValue(item.Value)}>Copy</Button> : null}
                         </div>
-                        {item.Key === "dns.dnssec_private_key_pem" || item.Key === "dns.dnssec_public_key_json" || (item.ReadOnly && String(item.Value || "").includes("\n")) ? (
+                        {item.Key === "mail.transport" ? (
+                          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : (
+                            <NativeSelect
+                              name={item.Key}
+                              defaultValue={item.Value || "smtps"}
+                              data={[
+                                { value: "smtp", label: "SMTP (plain)" },
+                                { value: "starttls", label: "SMTP + STARTTLS" },
+                                { value: "smtps", label: "SMTPS (implicit TLS)" }
+                              ]}
+                            />
+                          )
+                        ) : item.Key === "dns.dnssec_private_key_pem" || item.Key === "dns.dnssec_public_key_json" || (item.ReadOnly && String(item.Value || "").includes("\n")) ? (
                           item.ReadOnly ? <Textarea name={item.Key} value={item.Value} readOnly minRows={8} autosize /> : <Textarea name={item.Key} defaultValue={item.Value} minRows={8} autosize />
                         ) : (
                           item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : <TextInput name={item.Key} defaultValue={item.Value} />

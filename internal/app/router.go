@@ -56,10 +56,16 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/error-files/{id}", RequireAuth(serverconfiguration.UpdateErrorFile)).Methods("PUT")
 
 	r.HandleFunc("/api/analytics", RequireAuthAPI(analyticsHandler.API)).Methods("GET")
+	r.HandleFunc("/api/analytics/alerts", RequireAuthAPI(analyticsHandler.Alerts)).Methods("GET")
 	r.HandleFunc("/api/analytics/hosts", RequireAuthAPI(analyticsHandler.Hosts)).Methods("GET")
+	r.HandleFunc("/api/analytics/incidents", RequireAuthAPI(analyticsHandler.Incidents)).Methods("GET")
+	r.HandleFunc("/api/analytics/incidents/{id:[0-9]+}/dismiss", RequireAuthAPI(analyticsHandler.DismissIncident)).Methods("POST")
 	r.HandleFunc("/api/analytics/ips", RequireAuthAPI(analyticsHandler.IPs)).Methods("GET")
 	r.HandleFunc("/api/analytics/ip-geo", RequireAuthAPI(analyticsHandler.IPGeo)).Methods("GET")
+	r.HandleFunc("/api/analytics/logs", RequireAuthAPI(analyticsHandler.Logs)).Methods("GET")
+	r.HandleFunc("/api/analytics/ip-profile", RequireAuthAPI(analyticsHandler.IPProfile)).Methods("GET")
 	r.HandleFunc("/settings", RequireAuth(settingsHandler.Index)).Methods("POST")
+	r.HandleFunc("/api/settings/test_mail", RequireAuthAPI(settingsHandler.SendTestMail)).Methods("POST")
 
 	static, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
