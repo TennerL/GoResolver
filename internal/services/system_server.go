@@ -39,6 +39,7 @@ func systemServer() models.Server {
 		Name:     systemServerName,
 		IP:       ip,
 		Status:   status,
+		Uptime:   DefaultStatusMonitor().GetPingObservedUptime(ip),
 		IsSystem: true,
 	}
 }

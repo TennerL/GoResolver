@@ -3,6 +3,7 @@ package services
 import (
 	"GoResolver/internal/db"
 	"GoResolver/internal/models"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +13,8 @@ import (
 )
 
 const defaultLetsEncryptConfigFile = "/etc/nginx/snippets/letsencrypt.conf"
+
+var errNoNginxSiteConfiguration = errors.New("no nginx site configuration")
 
 type nginxSiteBundle struct {
 	ServerID         string
@@ -49,7 +52,7 @@ func buildNginxConfig(siteName string) (string, error) {
 		return "", err
 	}
 	if len(sites) == 0 {
-		return "", fmt.Errorf("no nginx site configuration for %q", siteName)
+		return "", fmt.Errorf("%w for %q", errNoNginxSiteConfiguration, siteName)
 	}
 
 	serverID := sites[0].ServerID
@@ -107,6 +110,7 @@ func loadNginxSiteConfigurations(siteName string) ([]models.ServerConfiguration,
 		LEFT JOIN servers s ON s.id = sc.fk_server
 		LEFT JOIN certificates c ON c.site_id = sc.id
 		WHERE sc.server_name = ?
+			AND sc.site_enabled = 1
 		ORDER BY sc.id
 	`, strings.TrimSpace(siteName))
 	if err != nil {

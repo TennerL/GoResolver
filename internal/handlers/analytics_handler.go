@@ -220,3 +220,17 @@ func (h *AnalyticsHandler) DismissIncident(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
 }
+
+func (h *AnalyticsHandler) DeleteIncident(w http.ResponseWriter, r *http.Request) {
+	rawID := strings.TrimSpace(mux.Vars(r)["id"])
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid incident id", http.StatusBadRequest)
+		return
+	}
+	if err := h.Service.DeleteIncident(id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+}

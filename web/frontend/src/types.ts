@@ -35,6 +35,7 @@ export interface Server {
   IP: string;
   VPN_File: string;
   Status: string;
+  Uptime?: string;
   IsSystem?: boolean;
 }
 
@@ -55,6 +56,7 @@ export interface SettingsPageState {
 export interface ServerConfiguration {
   ID: number;
   Server_Name: string;
+  Site_Enabled: number;
   Server_Port: number;
   SSL_Enabled: number;
   SSL_Redirect: number;
@@ -74,6 +76,7 @@ export interface ServerConfiguration {
   Key_Path: string;
   Cert_Issued: string;
   Cert_Expiration: string;
+  Cert_Renew_Scheduled: string;
 }
 
 export interface ServerErrorPage {

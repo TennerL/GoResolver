@@ -945,13 +945,27 @@ func (s *AnalyticsService) IPGeoPoints(filters AnalyticsFilters) ([]IPGeoPoint, 
 	return points, nil
 }
 
+func abuseIPDBCacheTTL() time.Duration {
+	ttlHours := parseIntSetting(NewSettingsService().GetValue("abuseipdb.cache_ttl_hours"), 24)
+	if ttlHours <= 0 {
+		ttlHours = 24
+	}
+	return time.Duration(ttlHours) * time.Hour
+}
+
 func (s *AnalyticsService) getIPReputation(ip, apiKey string, maxAgeDays, threshold int, cacheOnly bool) (int, int, string, string, error) {
-	cachedScore, cachedReports, cachedAt, ok := s.getCachedIPReputation(ip)
+	cachedScore, cachedReports, cachedAtTime, ok := s.getCachedIPReputationTime(ip)
 	if ok {
-		return cachedScore, cachedReports, cachedAt, verdictFromScore(cachedScore, threshold), nil
+		cachedAt := cachedAtTime.UTC().Format(time.RFC3339)
+		if cacheOnly || !isPublicRoutableIP(ip) || time.Since(cachedAtTime) < abuseIPDBCacheTTL() {
+			return cachedScore, cachedReports, cachedAt, verdictFromScore(cachedScore, threshold), nil
+		}
 	}
 	if cacheOnly {
 		return 0, 0, "", "unknown", fmt.Errorf("cache-only reputation lookup")
+	}
+	if !isPublicRoutableIP(ip) {
+		return 0, 0, "", "unknown", fmt.Errorf("non-public ip")
 	}
 
 	if apiKey == "" {
@@ -972,6 +986,14 @@ func (s *AnalyticsService) getIPReputation(ip, apiKey string, maxAgeDays, thresh
 }
 
 func (s *AnalyticsService) getCachedIPReputation(ip string) (int, int, string, bool) {
+	score, reports, checkedAt, ok := s.getCachedIPReputationTime(ip)
+	if !ok {
+		return 0, 0, "", false
+	}
+	return score, reports, checkedAt.UTC().Format(time.RFC3339), true
+}
+
+func (s *AnalyticsService) getCachedIPReputationTime(ip string) (int, int, time.Time, bool) {
 	var score, reports int
 	var checkedAt time.Time
 	row := db.DB.QueryRow(`
@@ -980,9 +1002,9 @@ func (s *AnalyticsService) getCachedIPReputation(ip string) (int, int, string, b
 		WHERE ip = ?
 	`, ip)
 	if err := row.Scan(&score, &reports, &checkedAt); err != nil {
-		return 0, 0, "", false
+		return 0, 0, time.Time{}, false
 	}
-	return score, reports, checkedAt.UTC().Format(time.RFC3339), true
+	return score, reports, checkedAt.UTC(), true
 }
 
 func (s *AnalyticsService) saveIPReputation(ip string, score, reports int) error {
@@ -1153,6 +1175,17 @@ func parseIntSetting(raw string, fallback int) int {
 func isValidIP(ip string) bool {
 	parsed := net.ParseIP(strings.TrimSpace(ip))
 	return parsed != nil
+}
+
+func isPublicRoutableIP(ip string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return false
+	}
+	if parsed.IsPrivate() || parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() || parsed.IsMulticast() || parsed.IsUnspecified() {
+		return false
+	}
+	return parsed.IsGlobalUnicast()
 }
 
 func (s *AnalyticsService) IPHosts(filters AnalyticsFilters) (map[string][]string, error) {

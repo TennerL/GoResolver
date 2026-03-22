@@ -33,11 +33,19 @@ type NginxLog struct {
 }
 
 var (
-	retentionMu      sync.Mutex
-	lastRetentionRun time.Time
-	alertEvalMu      sync.Mutex
-	lastAlertEvalRun time.Time
+	retentionMu             sync.Mutex
+	lastRetentionRun        time.Time
+	incidentSyncMu          sync.Mutex
+	lastIncidentSyncRun     time.Time
+	analyticsIncidentSyncFn = func() {
+		service := services.NewAnalyticsService()
+		if _, err := service.SyncIncidents(); err != nil {
+			log.Printf("analytics ingestion incident sync failed: %v", err)
+		}
+	}
 )
+
+const analyticsIncidentSyncEvery = 5 * time.Minute
 
 func StartNginxLogIngester(db *sql.DB, path string) {
 	ensureNginxLogsSchema(db)
@@ -213,7 +221,7 @@ func insertBatch(db *sql.DB, batch []NginxLog) {
 	}
 
 	maybePruneOldLogs(db)
-	maybeEvaluateAnalyticsAlerts()
+	maybeSyncAnalyticsIncidents()
 }
 
 func parseNginxTime(ts string) (time.Time, error) {
@@ -280,16 +288,15 @@ func getAnalyticsRetentionDays(db *sql.DB) int {
 	return value
 }
 
-func maybeEvaluateAnalyticsAlerts() {
-	alertEvalMu.Lock()
-	defer alertEvalMu.Unlock()
+func maybeSyncAnalyticsIncidents() {
+	incidentSyncMu.Lock()
+	defer incidentSyncMu.Unlock()
 
 	now := time.Now().UTC()
-	if !lastAlertEvalRun.IsZero() && now.Sub(lastAlertEvalRun) < 5*time.Minute {
+	if !lastIncidentSyncRun.IsZero() && now.Sub(lastIncidentSyncRun) < analyticsIncidentSyncEvery {
 		return
 	}
-	lastAlertEvalRun = now
+	lastIncidentSyncRun = now
 
-	service := services.NewAnalyticsService()
-	_, _ = service.Observability(services.AnalyticsFilters{RangeMinutes: 60})
+	analyticsIncidentSyncFn()
 }

@@ -78,6 +78,7 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "analytics.alert.request_spike_factor", Label: "Analytics request-spike factor", Group: "Analytics", Help: "Trigger alert when request volume exceeds this multiplier of the previous window", Default: "2.0"},
 	{Key: "analytics.alert.min_requests", Label: "Analytics alert minimum requests", Group: "Analytics", Help: "Require at least this many requests before threshold alerts trigger", Default: "100"},
 	{Key: "analytics.alert.suspicious_ip_count", Label: "Analytics suspicious IP threshold", Group: "Analytics", Help: "Trigger alert when this many suspicious IPs appear in the current window", Default: "3"},
+	{Key: "analytics.incident_window_minutes", Label: "Analytics incident window (minutes)", Group: "Analytics", Help: "Tracked incidents use this fixed monitoring window and ignore dashboard filter changes", Default: "60"},
 	{Key: "mail.smtp_host", Label: "SMTP host", Group: "Mail", Help: "Hostname of the outgoing SMTP server", Default: ""},
 	{Key: "mail.smtp_port", Label: "SMTP port", Group: "Mail", Help: "SMTP port, for example 465 or 587", Default: "465"},
 	{Key: "mail.username", Label: "SMTP username", Group: "Mail", Help: "Username for SMTP authentication", Default: ""},

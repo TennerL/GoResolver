@@ -6,25 +6,27 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	statusChecking       = "Checking"
-	statusOnline         = "Online"
-	statusOffline        = "Offline"
-	statusRefreshEvery   = 15 * time.Second
-	statusStaleAfter     = 20 * time.Second
-	statusProbeTimeout   = 1500 * time.Millisecond
-	statusProbeParallel  = 8
+	statusChecking      = "Checking"
+	statusOnline        = "Online"
+	statusOffline       = "Offline"
+	statusRefreshEvery  = 15 * time.Second
+	statusStaleAfter    = 20 * time.Second
+	statusProbeTimeout  = 1500 * time.Millisecond
+	statusProbeParallel = 8
 )
 
 type statusEntry struct {
-	Status     string
-	CheckedAt  time.Time
-	Refreshing bool
+	Status      string
+	CheckedAt   time.Time
+	OnlineSince time.Time
+	Refreshing  bool
 }
 
 type StatusMonitor struct {
@@ -75,6 +77,27 @@ func (m *StatusMonitor) GetPingStatus(ip string) string {
 	return m.getStatus(key, func() string {
 		return probePing(trimmedIP)
 	})
+}
+
+func (m *StatusMonitor) GetPingObservedUptime(ip string) string {
+	trimmedIP := strings.TrimSpace(ip)
+	if trimmedIP == "" {
+		return ""
+	}
+
+	m.Start()
+	key := "ping:" + trimmedIP
+	_ = m.getStatus(key, func() string {
+		return probePing(trimmedIP)
+	})
+
+	m.mu.RLock()
+	entry, ok := m.entries[key]
+	m.mu.RUnlock()
+	if !ok || entry.Status != statusOnline || entry.OnlineSince.IsZero() {
+		return ""
+	}
+	return formatObservedUptime(time.Since(entry.OnlineSince))
 }
 
 func (m *StatusMonitor) GetDNSStatus(addr string) string {
@@ -134,8 +157,17 @@ func (m *StatusMonitor) scheduleRefresh(key string, probe func() string) {
 
 		m.mu.Lock()
 		next := m.entries[key]
+		previousStatus := next.Status
 		next.Status = status
 		next.CheckedAt = time.Now()
+		switch status {
+		case statusOnline:
+			if previousStatus != statusOnline || next.OnlineSince.IsZero() {
+				next.OnlineSince = next.CheckedAt
+			}
+		default:
+			next.OnlineSince = time.Time{}
+		}
 		next.Refreshing = false
 		m.entries[key] = next
 		m.mu.Unlock()
@@ -220,4 +252,35 @@ func probeDNS(addr string) string {
 	}
 	_ = conn.Close()
 	return statusOnline
+}
+
+func formatObservedUptime(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	minutes := int(duration.Round(time.Minute) / time.Minute)
+	if minutes < 1 {
+		return "<1m"
+	}
+	days := minutes / (60 * 24)
+	hours := (minutes % (60 * 24)) / 60
+	mins := minutes % 60
+
+	parts := make([]string, 0, 3)
+	if days > 0 {
+		parts = append(parts, strconv.Itoa(days)+"d")
+	}
+	if hours > 0 {
+		parts = append(parts, strconv.Itoa(hours)+"h")
+	}
+	if mins > 0 && days == 0 {
+		parts = append(parts, strconv.Itoa(mins)+"m")
+	}
+	if len(parts) == 0 {
+		return "<1m"
+	}
+	if len(parts) > 2 {
+		parts = parts[:2]
+	}
+	return strings.Join(parts, " ")
 }

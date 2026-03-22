@@ -34,6 +34,7 @@ func (s *ServerService) GetServers() []models.Server {
 			continue
 		}
 		srv.Status = DefaultStatusMonitor().GetPingStatus(srv.IP)
+		srv.Uptime = DefaultStatusMonitor().GetPingObservedUptime(srv.IP)
 		servers = append(servers, srv)
 	}
 

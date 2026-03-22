@@ -17,6 +17,7 @@ import (
 	"github.com/miekg/dns"
 	"log"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -162,7 +163,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeA:
 		ip, ttl := querySingleRecord(zone, qname, "A")
 		if ip == "" {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		addRR(msg, fmt.Sprintf("%s %d IN A %s", fqdn, ttl, ip))
@@ -170,7 +171,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeAAAA:
 		ip, ttl := querySingleRecord(zone, qname, "AAAA")
 		if ip == "" {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		addRR(msg, fmt.Sprintf("%s %d IN AAAA %s", fqdn, ttl, ip))
@@ -178,7 +179,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeCNAME:
 		target, ttl := querySingleRecord(zone, qname, "CNAME")
 		if target == "" {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		addRR(msg, fmt.Sprintf(
@@ -191,7 +192,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeTXT:
 		txts := queryMultiRecords(zone, qname, "TXT")
 		if len(txts) == 0 {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		for _, t := range txts {
@@ -206,7 +207,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeMX:
 		mxs := queryMultiRecords(zone, qname, "MX")
 		if len(mxs) == 0 {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		for _, mx := range mxs {
@@ -227,7 +228,7 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 	case dns.TypeTLSA:
 		tlsaRecords := queryMultiRecords(zone, qname, "TLSA")
 		if len(tlsaRecords) == 0 {
-			msg.Rcode = dns.RcodeNameError
+			respondMissingType(msg, zone, qname, doBit)
 			break
 		}
 		for _, rec := range tlsaRecords {
@@ -259,32 +260,27 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 
 	case dns.TypeCAA:
 		if zone == "" {
-			msg.Rcode = dns.RcodeNameError
+			respondNameError(msg, zone, qname, doBit)
 			break
 		}
 		addRR(msg, fmt.Sprintf(
 			`%s 3600 IN CAA 0 issue "%s"`,
-			zoneFQDN,
+			fqdn,
 			appSettings.GetValue("dns.caa_issuer"),
 		))
 
 	case dns.TypeSOA:
 		if zone == "" {
-			msg.Rcode = dns.RcodeNameError
+			respondNameError(msg, zone, qname, doBit)
 			break
 		}
-		rname := appSettings.GetValue("dns.soa_rname_template")
-		if rname == "" {
-			rname = "hostmaster.{domain}"
+		if fqdn != zoneFQDN {
+			respondMissingType(msg, zone, qname, doBit)
+			break
 		}
-		rname = strings.ReplaceAll(rname, "{domain}", zoneFQDN)
-		addRR(msg, fmt.Sprintf(
-			"%s 3600 IN SOA %s %s %d 3600 900 604800 86400",
-			zoneFQDN,
-			appSettings.GetValue("dns.soa_mname"),
-			rname,
-			zoneSOASerial(zone),
-		))
+		if soa := buildSOARR(zone); soa != nil {
+			msg.Answer = append(msg.Answer, soa)
+		}
 
 	case dns.TypeDNSKEY:
 		if !settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) {
@@ -309,32 +305,15 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, data []byte) {
 		}
 
 	case dns.TypeDS:
-		if !settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) {
-			msg.Rcode = dns.RcodeNotImplemented
+		if zone == "" {
+			respondNameError(msg, zone, qname, doBit)
 			break
 		}
-		if zone == "" || fqdn != zoneFQDN {
-			msg.Rcode = dns.RcodeNameError
+		if qname == zone || nameExistsInZone(zone, qname) {
+			respondNoData(msg, zone, qname, doBit)
 			break
 		}
-		material, err := getOrCreateDNSSECKey()
-		if err != nil {
-			log.Println("DNSSEC key load failed:", err)
-			msg.Rcode = dns.RcodeServerFailure
-			break
-		}
-		keyCopy := *material.Key
-		keyCopy.Hdr = dns.RR_Header{Name: dns.Fqdn(zone), Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 3600}
-		ds := keyCopy.ToDS(dns.SHA256)
-		if ds == nil {
-			msg.Rcode = dns.RcodeServerFailure
-			break
-		}
-		ds.Hdr = dns.RR_Header{Name: dns.Fqdn(zone), Rrtype: dns.TypeDS, Class: dns.ClassINET, Ttl: 3600}
-		msg.Answer = append(msg.Answer, ds)
-		if sig := signRRSet(msg.Answer, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
-			msg.Answer = append(msg.Answer, sig)
-		}
+		respondNameError(msg, zone, qname, doBit)
 
 	default:
 		msg.Rcode = dns.RcodeNotImplemented
@@ -371,6 +350,349 @@ func addRR(msg *dns.Msg, rrStr string) {
 		return
 	}
 	msg.Answer = append(msg.Answer, rr)
+}
+
+func respondMissingType(msg *dns.Msg, zone, qname string, doBit bool) {
+	if zone == "" {
+		respondNameError(msg, zone, qname, doBit)
+		return
+	}
+	if nameExistsInZone(zone, qname) {
+		respondNoData(msg, zone, qname, doBit)
+		return
+	}
+	respondNameError(msg, zone, qname, doBit)
+}
+
+func respondNoData(msg *dns.Msg, zone, qname string, doBit bool) {
+	msg.Rcode = dns.RcodeSuccess
+	appendNegativeAuthority(msg, zone, qname, doBit)
+}
+
+func respondNameError(msg *dns.Msg, zone, qname string, doBit bool) {
+	msg.Rcode = dns.RcodeNameError
+	appendNegativeAuthority(msg, zone, qname, doBit)
+}
+
+func appendNegativeAuthority(msg *dns.Msg, zone, qname string, doBit bool) {
+	if zone == "" {
+		return
+	}
+
+	if soa := buildSOARR(zone); soa != nil {
+		msg.Ns = append(msg.Ns, soa)
+	}
+
+	if !doBit || !settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false) {
+		return
+	}
+
+	material, err := getOrCreateDNSSECKey()
+	if err != nil {
+		log.Println("DNSSEC key load failed:", err)
+		return
+	}
+
+	if len(msg.Ns) > 0 {
+		if sig := signRRSet([]dns.RR{msg.Ns[0]}, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
+			msg.Ns = append(msg.Ns, sig)
+		}
+	}
+
+	nsec := buildNSECProof(zone, qname)
+	if nsec == nil {
+		return
+	}
+	msg.Ns = append(msg.Ns, nsec)
+	if sig := signRRSet([]dns.RR{nsec}, material.Key, material.Signer, dns.Fqdn(zone)); sig != nil {
+		msg.Ns = append(msg.Ns, sig)
+	}
+}
+
+func buildSOARR(zone string) dns.RR {
+	zoneFQDN := dns.Fqdn(zone)
+	rname := appSettings.GetValue("dns.soa_rname_template")
+	if rname == "" {
+		rname = "hostmaster.{domain}"
+	}
+	rname = strings.ReplaceAll(rname, "{domain}", zoneFQDN)
+
+	rr, err := dns.NewRR(fmt.Sprintf(
+		"%s 3600 IN SOA %s %s %d 3600 900 604800 86400",
+		zoneFQDN,
+		appSettings.GetValue("dns.soa_mname"),
+		rname,
+		zoneSOASerial(zone),
+	))
+	if err != nil {
+		log.Println("Invalid SOA RR:", err)
+		return nil
+	}
+	return rr
+}
+
+func buildNSECProof(zone, qname string) *dns.NSEC {
+	names := queryZoneNames(zone)
+	if len(names) == 0 {
+		names = []string{zone}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return dnssecCanonicalLess(names[i], names[j])
+	})
+
+	owner, next, _ := findNSECSpan(names, qname)
+	if owner == "" {
+		return nil
+	}
+
+	typeBitMap := nsecTypeBitMap(queryRecordTypeStrings(zone, owner), owner == zone, settingEnabled(appSettings.GetValue("dns.dnssec_enabled"), false), true)
+	if len(typeBitMap) == 0 {
+		typeBitMap = []uint16{dns.TypeNSEC}
+	}
+
+	return &dns.NSEC{
+		Hdr: dns.RR_Header{
+			Name:   dns.Fqdn(owner),
+			Rrtype: dns.TypeNSEC,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		NextDomain: dns.Fqdn(next),
+		TypeBitMap: typeBitMap,
+	}
+}
+
+func findNSECSpan(names []string, qname string) (owner string, next string, exists bool) {
+	if len(names) == 0 {
+		return "", "", false
+	}
+
+	canonicalNames := make([]string, len(names))
+	for i, name := range names {
+		canonicalNames[i] = dns.CanonicalName(name)
+	}
+	query := dns.CanonicalName(qname)
+	insertIndex := len(canonicalNames)
+	for i, name := range canonicalNames {
+		if name == query {
+			return strings.TrimSuffix(name, "."), strings.TrimSuffix(canonicalNames[(i+1)%len(canonicalNames)], "."), true
+		}
+		if insertIndex == len(canonicalNames) && dnssecCanonicalLess(query, name) {
+			insertIndex = i
+		}
+	}
+	if insertIndex == len(canonicalNames) {
+		insertIndex = 0
+	}
+	ownerIndex := insertIndex - 1
+	if ownerIndex < 0 {
+		ownerIndex = len(canonicalNames) - 1
+	}
+	return strings.TrimSuffix(canonicalNames[ownerIndex], "."), strings.TrimSuffix(canonicalNames[insertIndex], "."), false
+}
+
+func dnssecCanonicalLess(a, b string) bool {
+	aLabels := splitDNSLabels(a)
+	bLabels := splitDNSLabels(b)
+
+	for ai, bi := len(aLabels)-1, len(bLabels)-1; ai >= 0 || bi >= 0; ai, bi = ai-1, bi-1 {
+		if ai < 0 {
+			return true
+		}
+		if bi < 0 {
+			return false
+		}
+		if aLabels[ai] == bLabels[bi] {
+			continue
+		}
+		return compareDNSLabel(aLabels[ai], bLabels[bi]) < 0
+	}
+	return false
+}
+
+func splitDNSLabels(name string) []string {
+	trimmed := strings.TrimSuffix(dns.CanonicalName(name), ".")
+	if trimmed == "" {
+		return []string{}
+	}
+	return strings.Split(trimmed, ".")
+}
+
+func compareDNSLabel(a, b string) int {
+	limit := len(a)
+	if len(b) < limit {
+		limit = len(b)
+	}
+	for i := 0; i < limit; i++ {
+		if a[i] == b[i] {
+			continue
+		}
+		if a[i] < b[i] {
+			return -1
+		}
+		return 1
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func nsecTypeBitMap(recordTypes []string, isZoneApex bool, dnssecEnabled bool, synthesizeCAA bool) []uint16 {
+	types := map[uint16]struct{}{}
+	for _, recordType := range recordTypes {
+		if rrType := dnsTypeFromString(recordType); rrType != 0 {
+			types[rrType] = struct{}{}
+		}
+	}
+	if isZoneApex {
+		types[dns.TypeSOA] = struct{}{}
+		types[dns.TypeNS] = struct{}{}
+	}
+	if synthesizeCAA {
+		types[dns.TypeCAA] = struct{}{}
+	}
+	if dnssecEnabled {
+		types[dns.TypeNSEC] = struct{}{}
+		types[dns.TypeRRSIG] = struct{}{}
+		if isZoneApex {
+			types[dns.TypeDNSKEY] = struct{}{}
+		}
+	}
+
+	result := make([]uint16, 0, len(types))
+	for rrType := range types {
+		result = append(result, rrType)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i] < result[j]
+	})
+	return result
+}
+
+func dnsTypeFromString(recordType string) uint16 {
+	switch strings.ToUpper(strings.TrimSpace(recordType)) {
+	case "A":
+		return dns.TypeA
+	case "AAAA":
+		return dns.TypeAAAA
+	case "CNAME":
+		return dns.TypeCNAME
+	case "TXT":
+		return dns.TypeTXT
+	case "MX":
+		return dns.TypeMX
+	case "TLSA":
+		return dns.TypeTLSA
+	case "NS":
+		return dns.TypeNS
+	case "SOA":
+		return dns.TypeSOA
+	case "CAA":
+		return dns.TypeCAA
+	case "DNSKEY":
+		return dns.TypeDNSKEY
+	case "RRSIG":
+		return dns.TypeRRSIG
+	case "NSEC":
+		return dns.TypeNSEC
+	default:
+		return 0
+	}
+}
+
+func nameExistsInZone(zone, domain string) bool {
+	if zone == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSuffix(zone, "."), strings.TrimSuffix(domain, ".")) {
+		return true
+	}
+
+	var count int
+	err := db.DB.QueryRow(
+		`SELECT COUNT(*)
+		FROM records r
+		INNER JOIN domains d ON d.id = r.domain_id
+		WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?
+		  AND TRIM(TRAILING '.' FROM LOWER(r.name)) = ?`,
+		zone, domain,
+	).Scan(&count)
+	if err != nil {
+		return false
+	}
+	return count > 0
+}
+
+func queryRecordTypeStrings(zone, domain string) []string {
+	if zone == "" {
+		return nil
+	}
+
+	rows, err := db.DB.Query(
+		`SELECT DISTINCT UPPER(r.type)
+		FROM records r
+		INNER JOIN domains d ON d.id = r.domain_id
+		WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?
+		  AND TRIM(TRAILING '.' FROM LOWER(r.name)) = ?`,
+		zone, domain,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	result := []string{}
+	for rows.Next() {
+		var recordType string
+		if err := rows.Scan(&recordType); err == nil {
+			result = append(result, recordType)
+		}
+	}
+	return result
+}
+
+func queryZoneNames(zone string) []string {
+	if zone == "" {
+		return nil
+	}
+
+	names := []string{strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")}
+	rows, err := db.DB.Query(
+		`SELECT DISTINCT TRIM(TRAILING '.' FROM LOWER(r.name))
+		FROM records r
+		INNER JOIN domains d ON d.id = r.domain_id
+		WHERE TRIM(TRAILING '.' FROM LOWER(d.name)) = ?`,
+		zone,
+	)
+	if err != nil {
+		return names
+	}
+	defer rows.Close()
+
+	seen := map[string]struct{}{
+		names[0]: {},
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
 }
 
 func querySingleRecord(zone, domain, rtype string) (string, uint32) {

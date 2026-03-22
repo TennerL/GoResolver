@@ -42,10 +42,9 @@ type AnalyticsLogSearchResult struct {
 }
 
 type AnalyticsIncidentContext struct {
-	Hosts        []string            `json:"hosts"`
-	TopIPs       []string            `json:"top_ips"`
-	TopURIs      []string            `json:"top_uris"`
-	RecentEvents []AnalyticsLogEntry `json:"recent_events"`
+	Hosts   []string `json:"hosts"`
+	TopIPs  []string `json:"top_ips"`
+	TopURIs []string `json:"top_uris"`
 }
 
 type AnalyticsAlert struct {
@@ -62,32 +61,55 @@ type AnalyticsAlert struct {
 
 type AnalyticsObservability struct {
 	Alerts        []AnalyticsAlert `json:"alerts"`
-	Incidents     []AnalyticsIncident `json:"incidents"`
 	RetentionDays int              `json:"retention_days"`
 }
 
 type AnalyticsIPProfile struct {
-	IP               string              `json:"ip"`
-	Hostnames        []string            `json:"hostnames"`
-	ISP              string              `json:"isp"`
-	City             string              `json:"city"`
-	Region           string              `json:"region"`
-	Country          string              `json:"country"`
-	Verdict          string              `json:"verdict"`
-	Score            int                 `json:"score"`
-	Reports          int                 `json:"reports"`
-	CheckedAt        string              `json:"checked_at"`
-	Summary          AnalyticsSummary    `json:"summary"`
-	RequestsOverTime analyticsIntSeries  `json:"requests_over_time"`
+	IP               string               `json:"ip"`
+	Hostnames        []string             `json:"hostnames"`
+	ISP              string               `json:"isp"`
+	City             string               `json:"city"`
+	Region           string               `json:"region"`
+	Country          string               `json:"country"`
+	Verdict          string               `json:"verdict"`
+	Score            int                  `json:"score"`
+	Reports          int                  `json:"reports"`
+	CheckedAt        string               `json:"checked_at"`
+	Summary          AnalyticsSummary     `json:"summary"`
+	RequestsOverTime analyticsIntSeries   `json:"requests_over_time"`
 	StatusCodes      []AnalyticsCountItem `json:"status_codes"`
 	TopPaths         []AnalyticsCountItem `json:"top_paths"`
 	TopHosts         []AnalyticsCountItem `json:"top_hosts"`
-	RecentRequests   []AnalyticsLogEntry `json:"recent_requests"`
+	RecentRequests   []AnalyticsLogEntry  `json:"recent_requests"`
 }
 
 func analyticsRetentionDays() int {
 	settings := NewSettingsService()
 	return parseIntSetting(settings.GetValue("analytics.retention_days"), 30)
+}
+
+func normalizeAnalyticsIncidentWindowMinutes(windowMinutes, retentionDays int) int {
+	if windowMinutes <= 0 {
+		windowMinutes = 60
+	}
+	maxWindowMinutes := retentionDays * 24 * 60
+	if maxWindowMinutes > 0 && windowMinutes > maxWindowMinutes {
+		windowMinutes = maxWindowMinutes
+	}
+	return windowMinutes
+}
+
+func analyticsIncidentWindowMinutes() int {
+	settings := NewSettingsService()
+	windowMinutes := parseIntSetting(settings.GetValue("analytics.incident_window_minutes"), 60)
+	return normalizeAnalyticsIncidentWindowMinutes(windowMinutes, analyticsRetentionDays())
+}
+
+func analyticsIncidentFilters() AnalyticsFilters {
+	return AnalyticsFilters{
+		RangeMinutes:       analyticsIncidentWindowMinutes(),
+		IncludeInternalAPI: false,
+	}
 }
 
 func analyticsAlertThresholds() (errorRate float64, latencyMs float64, spikeFactor float64, minRequests int, suspiciousIPs int) {
@@ -121,11 +143,11 @@ func parseFloatSetting(raw string, fallback float64) float64 {
 	return fallback
 }
 
-func (s *AnalyticsService) Observability(filters AnalyticsFilters) (AnalyticsObservability, error) {
+func (s *AnalyticsService) buildAlerts(filters AnalyticsFilters) ([]AnalyticsAlert, error) {
 	filters = normalizeAnalyticsFilters(filters)
 	current, err := s.Snapshot(filters)
 	if err != nil {
-		return AnalyticsObservability{}, err
+		return nil, err
 	}
 
 	window := filters.To.Sub(filters.From)
@@ -138,9 +160,9 @@ func (s *AnalyticsService) Observability(filters AnalyticsFilters) (AnalyticsObs
 	previousFilters.From = filters.From.Add(-window)
 	previous, _ := s.Snapshot(previousFilters)
 
-	context, err := s.IncidentContext(filters, 8)
+	context, err := s.IncidentContext(filters, 5)
 	if err != nil {
-		return AnalyticsObservability{}, err
+		return nil, err
 	}
 
 	errorRateThreshold, latencyThresholdMs, spikeFactor, minRequests, suspiciousIPThreshold := analyticsAlertThresholds()
@@ -215,23 +237,21 @@ func (s *AnalyticsService) Observability(filters AnalyticsFilters) (AnalyticsObs
 		})
 	}
 
-	incidents, err := s.syncIncidents(alerts)
+	return alerts, nil
+}
+
+func (s *AnalyticsService) Observability(filters AnalyticsFilters) (AnalyticsObservability, error) {
+	alerts, err := s.buildAlerts(filters)
 	if err != nil {
 		return AnalyticsObservability{}, err
 	}
-
 	return AnalyticsObservability{
 		Alerts:        alerts,
-		Incidents:     incidents,
 		RetentionDays: analyticsRetentionDays(),
 	}, nil
 }
 
 func (s *AnalyticsService) IncidentContext(filters AnalyticsFilters, limit int) (AnalyticsIncidentContext, error) {
-	logs, err := s.LogSearch(filters, limit, 0)
-	if err != nil {
-		return AnalyticsIncidentContext{}, err
-	}
 	snapshot, err := s.Snapshot(filters)
 	if err != nil {
 		return AnalyticsIncidentContext{}, err
@@ -257,10 +277,9 @@ func (s *AnalyticsService) IncidentContext(filters AnalyticsFilters, limit int) 
 	}
 
 	return AnalyticsIncidentContext{
-		Hosts:        hostLabels,
-		TopIPs:       topIPs,
-		TopURIs:      topURIs,
-		RecentEvents: logs.Items,
+		Hosts:   hostLabels,
+		TopIPs:  topIPs,
+		TopURIs: topURIs,
 	}, nil
 }
 

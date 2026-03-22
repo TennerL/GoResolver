@@ -21,12 +21,16 @@ type serverConfigurationUpdateData struct {
 	vpnBytes            []byte
 	ids                 []string
 	serverNames         []string
+	siteEnabled         []string
 	serverPorts         []string
 	sslEnabled          []string
 	sslRedirect         []string
 	hstsEnabled         []string
 	proxyPassPorts      []string
 	proxyErrors         []string
+	proxyConnectTimeout []string
+	proxyReadTimeout    []string
+	proxySendTimeout    []string
 	websocketsEnabled   []string
 	errorPageIDs        []string
 	errorPageSiteIDs    []string
@@ -40,12 +44,16 @@ type serverConfigurationUpdateData struct {
 type serverConfigurationRow struct {
 	id          string
 	name        string
+	siteEnabled int
 	port        int
 	sslEnabled  int
 	sslRedirect int
 	hsts        int
 	proxyPort   int
 	proxyErrors int
+	connectTTL  int
+	readTTL     int
+	sendTTL     int
 	websockets  int
 }
 
@@ -74,12 +82,16 @@ func loadServerConfigurationUpdateData(r *http.Request) serverConfigurationUpdat
 		vpnBytes:            []byte(vpnText),
 		ids:                 r.Form["id[]"],
 		serverNames:         r.Form["server_name[]"],
+		siteEnabled:         r.Form["site_enabled[]"],
 		serverPorts:         r.Form["server_port[]"],
 		sslEnabled:          r.Form["ssl_enabled[]"],
 		sslRedirect:         r.Form["ssl_redirect[]"],
 		hstsEnabled:         r.Form["hsts[]"],
 		proxyPassPorts:      r.Form["proxy_pass_port[]"],
 		proxyErrors:         r.Form["proxy_intercept_errors[]"],
+		proxyConnectTimeout: r.Form["proxy_connect_timeout[]"],
+		proxyReadTimeout:    r.Form["proxy_read_timeout[]"],
+		proxySendTimeout:    r.Form["proxy_send_timeout[]"],
 		websocketsEnabled:   r.Form["Websockets[]"],
 		errorPageIDs:        r.Form["error_page_id[]"],
 		errorPageSiteIDs:    r.Form["site_id[]"],
@@ -178,12 +190,16 @@ func (d serverConfigurationUpdateData) serverConfigurationRowAt(i int) serverCon
 	return serverConfigurationRow{
 		id:          valueAt(d.ids, i),
 		name:        strings.TrimSpace(valueAt(d.serverNames, i)),
+		siteEnabled: atoiOrZero(valueAt(d.siteEnabled, i)),
 		port:        atoiOrZero(valueAt(d.serverPorts, i)),
 		sslEnabled:  atoiOrZero(valueAt(d.sslEnabled, i)),
 		sslRedirect: atoiOrZero(valueAt(d.sslRedirect, i)),
 		hsts:        atoiOrZero(valueAt(d.hstsEnabled, i)),
 		proxyPort:   atoiOrZero(valueAt(d.proxyPassPorts, i)),
 		proxyErrors: atoiOrZero(valueAt(d.proxyErrors, i)),
+		connectTTL:  atoiOrZero(valueAt(d.proxyConnectTimeout, i)),
+		readTTL:     atoiOrZero(valueAt(d.proxyReadTimeout, i)),
+		sendTTL:     atoiOrZero(valueAt(d.proxySendTimeout, i)),
 		websockets:  atoiOrZero(valueAt(d.websocketsEnabled, i)),
 	}
 }
@@ -302,12 +318,16 @@ func (h *ServerConfigurationHandler) saveServerConfigurationRows(serverID string
 	rowCount := maxLen(
 		updateData.ids,
 		updateData.serverNames,
+		updateData.siteEnabled,
 		updateData.serverPorts,
 		updateData.sslEnabled,
 		updateData.sslRedirect,
 		updateData.hstsEnabled,
 		updateData.proxyPassPorts,
 		updateData.proxyErrors,
+		updateData.proxyConnectTimeout,
+		updateData.proxyReadTimeout,
+		updateData.proxySendTimeout,
 		updateData.websocketsEnabled,
 	)
 
@@ -320,12 +340,16 @@ func (h *ServerConfigurationHandler) saveServerConfigurationRows(serverID string
 		config := models.ServerConfiguration{
 			ServerID:               serverID,
 			Server_Name:            row.name,
+			Site_Enabled:           row.siteEnabled,
 			Server_Port:            row.port,
 			SSL_Enabled:            row.sslEnabled,
 			SSL_Redirect:           row.sslRedirect,
 			HSTS:                   row.hsts,
 			Proxy_Pass_Port:        row.proxyPort,
 			Proxy_Intercept_Errors: row.proxyErrors,
+			Proxy_Connect_Timeout:  row.connectTTL,
+			Proxy_Read_Timeout:     row.readTTL,
+			Proxy_Send_Timeout:     row.sendTTL,
 			Websockets:             row.websockets,
 		}
 

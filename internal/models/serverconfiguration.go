@@ -3,6 +3,7 @@ package models
 type ServerConfiguration struct {
 	ID                     int
 	Server_Name            string
+	Site_Enabled           int
 	Server_Port            int
 	SSL_Enabled            int
 	SSL_Redirect           int
@@ -22,6 +23,7 @@ type ServerConfiguration struct {
 	Key_Path               string
 	Cert_Issued            string
 	Cert_Expiration        string
+	Cert_Renew_Scheduled   string
 	LetsEncryptConfigFile  string
 }
 

@@ -142,3 +142,17 @@ func TestAnalyticsTimeLabelFormatScalesWithWindow(t *testing.T) {
 		t.Fatalf("expected daily granularity for long window, got %q", got)
 	}
 }
+
+func TestIsPublicRoutableIP(t *testing.T) {
+	if !isPublicRoutableIP("8.8.8.8") {
+		t.Fatal("expected public IPv4 address to be routable")
+	}
+	if !isPublicRoutableIP("2606:4700:4700::1111") {
+		t.Fatal("expected public IPv6 address to be routable")
+	}
+	for _, ip := range []string{"127.0.0.1", "10.0.0.5", "192.168.1.20", "169.254.0.1", "::1", "fc00::1", ""} {
+		if isPublicRoutableIP(ip) {
+			t.Fatalf("expected %q to be treated as non-public", ip)
+		}
+	}
+}

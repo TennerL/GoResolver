@@ -7,5 +7,6 @@ type Server struct {
 	IP        string
 	VPN_File  string
 	Status    string
+	Uptime    string
 	IsSystem  bool
 }

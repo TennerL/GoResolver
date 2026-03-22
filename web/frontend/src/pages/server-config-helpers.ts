@@ -21,7 +21,7 @@ export function updateListItem(items, index, field, value) {
 }
 
 export function mapSite(site) {
-  return { ID: String(site.ID), Server_Name: site.Server_Name || "", Server_Port: String(site.Server_Port || ""), SSL_Enabled: String(site.SSL_Enabled ?? 0), SSL_Redirect: String(site.SSL_Redirect ?? 0), HSTS: String(site.HSTS ?? 0), Proxy_Pass_Port: String(site.Proxy_Pass_Port || ""), Proxy_Intercept_Errors: String(site.Proxy_Intercept_Errors ?? 0), Websockets: String(site.Websockets ?? 0) };
+  return { ID: String(site.ID), Server_Name: site.Server_Name || "", Site_Enabled: String(site.Site_Enabled ?? 1), Server_Port: String(site.Server_Port || ""), SSL_Enabled: String(site.SSL_Enabled ?? 0), SSL_Redirect: String(site.SSL_Redirect ?? 0), HSTS: String(site.HSTS ?? 0), Proxy_Pass_Port: String(site.Proxy_Pass_Port || ""), Proxy_Intercept_Errors: String(site.Proxy_Intercept_Errors ?? 0), Proxy_Connect_Timeout: String(site.Proxy_Connect_Timeout || 5), Proxy_Read_Timeout: String(site.Proxy_Read_Timeout || 300), Proxy_Send_Timeout: String(site.Proxy_Send_Timeout || 300), Websockets: String(site.Websockets ?? 0) };
 }
 
 export function mapErrorPage(errorPage) {
@@ -102,7 +102,7 @@ export function buildServerConfigFormState(page) {
 }
 
 export function emptySiteRow() {
-  return { ID: "", Server_Name: "", Server_Port: "80", SSL_Enabled: "0", SSL_Redirect: "0", HSTS: "0", Proxy_Pass_Port: "8080", Proxy_Intercept_Errors: "0", Websockets: "0" };
+  return { ID: "", Server_Name: "", Site_Enabled: "1", Server_Port: "80", SSL_Enabled: "0", SSL_Redirect: "0", HSTS: "0", Proxy_Pass_Port: "8080", Proxy_Intercept_Errors: "0", Proxy_Connect_Timeout: "5", Proxy_Read_Timeout: "300", Proxy_Send_Timeout: "300", Websockets: "0" };
 }
 
 export function emptyErrorPageRow() {

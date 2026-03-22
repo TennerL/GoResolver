@@ -1,8 +1,8 @@
-import { ActionIcon, Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Text, TextInput, Textarea, Title } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Tabs, Text, TextInput, Textarea, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { ActionForm, EmptyState, PageHeader, StatusBadge, useSPA } from "../common";
 import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconSearch, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 export function LoginPageView({ page }) {
   return (
@@ -152,12 +152,12 @@ export function ServersPageView({ page }) {
   const servers = Array.isArray(page.Data) ? page.Data : [];
   return (
     <Container fluid>
-      <PageHeader title="Servers" description="Manage resolver targets and jump into per-server configuration." actions={<Button leftSection={<IconPlus size={16} />} onClick={open}>Add Server</Button>} />
+      <PageHeader title="Servers" description="Manage resolver targets, inspect reachability, and review observed uptime per server." actions={<Button leftSection={<IconPlus size={16} />} onClick={open}>Add Server</Button>} />
       <Paper radius="xl" p="md" className="soft-panel">
         {servers.length === 0 ? <EmptyState title="No servers connected" description="Add a server to configure VPN access, reverse proxy rules, and protection policies." /> : (
-          <Table.ScrollContainer minWidth={860}>
+          <Table.ScrollContainer minWidth={980}>
             <Table highlightOnHover verticalSpacing="sm">
-              <Table.Thead><Table.Tr><Table.Th>ID</Table.Th><Table.Th>Name</Table.Th><Table.Th>IP</Table.Th><Table.Th>Status</Table.Th><Table.Th>Actions</Table.Th></Table.Tr></Table.Thead>
+              <Table.Thead><Table.Tr><Table.Th>ID</Table.Th><Table.Th>Name</Table.Th><Table.Th>IP</Table.Th><Table.Th>Status</Table.Th><Table.Th>Observed Uptime</Table.Th><Table.Th>Actions</Table.Th></Table.Tr></Table.Thead>
               <Table.Tbody>
                 {servers.map((server) => (
                   <Table.Tr key={server.ID}>
@@ -165,6 +165,7 @@ export function ServersPageView({ page }) {
                     <Table.Td fw={600}>{server.Name}{server.IsSystem ? <Badge ml="sm" color="blue" variant="light">System</Badge> : null}</Table.Td>
                     <Table.Td><Code className="code-chip">{server.IP}</Code></Table.Td>
                     <Table.Td><StatusBadge status={server.Status || "Unknown"} /></Table.Td>
+                    <Table.Td>{server.Uptime ? <Code className="code-chip">{server.Uptime}</Code> : <Text c="dimmed">-</Text>}</Table.Td>
                     <Table.Td>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <Button component="a" href={`/servers/${server.ID}/server_configuration`} size="xs" variant="light">Configure</Button>
@@ -195,20 +196,35 @@ export function SettingsPageView({ page }) {
   const spa = useSPA();
   const items = Array.isArray(page.Data?.Items) ? page.Data.Items : [];
   const [query, setQuery] = useState("");
+  const [activeGroup, setActiveGroup] = useState("all");
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = deferredQuery.trim().toLowerCase();
-  const groups = useMemo(() => items.reduce<Record<string, Array<(typeof items)[number]>>>((accumulator, item) => {
+  const filteredItems = useMemo(() => items.filter((item) => {
     const haystack = [item.Label, item.Key, item.Help, item.Value].join(" ").toLowerCase();
-    if (normalizedQuery && !haystack.includes(normalizedQuery)) {
-      return accumulator;
+    return !normalizedQuery || haystack.includes(normalizedQuery);
+  }), [items, normalizedQuery]);
+  const groupEntries = useMemo(() => {
+    const grouped = new Map<string, Array<(typeof items)[number]>>();
+    for (const item of filteredItems) {
+      const group = item.Group || "General";
+      const bucket = grouped.get(group);
+      if (bucket) {
+        bucket.push(item);
+      } else {
+        grouped.set(group, [item]);
+      }
     }
-    const group = item.Group || "General";
-    accumulator[group] = accumulator[group] || [];
-    accumulator[group].push(item);
-    return accumulator;
-  }, {}), [items, normalizedQuery]);
-  const groupEntries = useMemo(() => Object.entries(groups), [groups]);
-  const filteredCount = useMemo(() => groupEntries.reduce((count, [, groupItems]) => count + groupItems.length, 0), [groupEntries]);
+    return Array.from(grouped.entries());
+  }, [filteredItems]);
+  const filteredCount = filteredItems.length;
+  useEffect(() => {
+    if (activeGroup === "all") {
+      return;
+    }
+    if (!groupEntries.some(([group]) => group === activeGroup)) {
+      setActiveGroup(groupEntries[0]?.[0] || "all");
+    }
+  }, [activeGroup, groupEntries]);
   const copyValue = async (value) => {
     try {
       await navigator.clipboard.writeText(value || "");
@@ -225,6 +241,45 @@ export function SettingsPageView({ page }) {
       window.alert(error instanceof Error ? error.message : "Test mail failed.");
     }
   };
+  const renderItem = (item) => (
+    <Paper key={item.Key} radius="lg" p="md" className="shell-panel">
+      <Stack gap="xs">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
+          <div><Text fw={600}>{item.Label}</Text>{item.Help ? <Text size="sm" c="dimmed">{item.Help}</Text> : null}</div>
+          {item.ReadOnly ? <Button type="button" variant="light" color="gray" onClick={() => void copyValue(item.Value)}>Copy</Button> : null}
+        </div>
+        {item.Key === "mail.transport" ? (
+          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : (
+            <NativeSelect
+              name={item.Key}
+              defaultValue={item.Value || "smtps"}
+              data={[
+                { value: "smtp", label: "SMTP (plain)" },
+                { value: "starttls", label: "SMTP + STARTTLS" },
+                { value: "smtps", label: "SMTPS (implicit TLS)" }
+              ]}
+            />
+          )
+        ) : item.Key === "dns.dnssec_private_key_pem" || item.Key === "dns.dnssec_public_key_json" || (item.ReadOnly && String(item.Value || "").includes("\n")) ? (
+          item.ReadOnly ? <Textarea name={item.Key} value={item.Value} readOnly minRows={8} autosize /> : <Textarea name={item.Key} defaultValue={item.Value} minRows={8} autosize />
+        ) : (
+          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : <TextInput name={item.Key} defaultValue={item.Value} />
+        )}
+        <Text size="xs" c="dimmed">Key: <Code className="code-chip">{item.Key}</Code></Text>
+      </Stack>
+    </Paper>
+  );
+  const renderGroup = (group, groupItems) => (
+    <Paper key={group} radius="xl" p="lg" className="soft-panel">
+      <Stack gap="md">
+        <div className="settings-group-header">
+          <Title order={4}>{group}</Title>
+          <Badge variant="light" color="gray">{groupItems.length}</Badge>
+        </div>
+        {groupItems.map(renderItem)}
+      </Stack>
+    </Paper>
+  );
   return (
     <Container fluid>
       <PageHeader
@@ -267,44 +322,35 @@ export function SettingsPageView({ page }) {
               <Paper radius="xl" p="lg" className="soft-panel">
                 <EmptyState title="No settings match this filter" description="Try a shorter term, a setting key, or a path fragment." />
               </Paper>
-            ) : groupEntries.map(([group, groupItems]) => (
-              <Paper key={group} radius="xl" p="lg" className="soft-panel">
-                <Stack gap="md">
-                  <div className="settings-group-header">
-                    <Title order={4}>{group}</Title>
-                    <Badge variant="light" color="gray">{groupItems.length}</Badge>
-                  </div>
-                  {groupItems.map((item) => (
-                    <Paper key={`${item.Key}:${item.Value}`} radius="lg" p="md" className="shell-panel">
-                      <Stack gap="xs">
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", flexWrap: "wrap" }}>
-                          <div><Text fw={600}>{item.Label}</Text>{item.Help ? <Text size="sm" c="dimmed">{item.Help}</Text> : null}</div>
-                          {item.ReadOnly ? <Button type="button" variant="light" color="gray" onClick={() => void copyValue(item.Value)}>Copy</Button> : null}
-                        </div>
-                        {item.Key === "mail.transport" ? (
-                          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : (
-                            <NativeSelect
-                              name={item.Key}
-                              defaultValue={item.Value || "smtps"}
-                              data={[
-                                { value: "smtp", label: "SMTP (plain)" },
-                                { value: "starttls", label: "SMTP + STARTTLS" },
-                                { value: "smtps", label: "SMTPS (implicit TLS)" }
-                              ]}
-                            />
-                          )
-                        ) : item.Key === "dns.dnssec_private_key_pem" || item.Key === "dns.dnssec_public_key_json" || (item.ReadOnly && String(item.Value || "").includes("\n")) ? (
-                          item.ReadOnly ? <Textarea name={item.Key} value={item.Value} readOnly minRows={8} autosize /> : <Textarea name={item.Key} defaultValue={item.Value} minRows={8} autosize />
-                        ) : (
-                          item.ReadOnly ? <TextInput name={item.Key} value={item.Value} readOnly /> : <TextInput name={item.Key} defaultValue={item.Value} />
-                        )}
-                        <Text size="xs" c="dimmed">Key: <Code className="code-chip">{item.Key}</Code></Text>
-                      </Stack>
-                    </Paper>
-                  ))}
-                </Stack>
-              </Paper>
-            ))}
+            ) : (
+              <Tabs value={activeGroup} onChange={(value) => setActiveGroup(value || "all")} radius="xl">
+                <Paper radius="xl" p="lg" className="soft-panel">
+                  <Stack gap="md">
+                    <div className="settings-group-header">
+                      <div>
+                        <Title order={4}>Setting Groups</Title>
+                        <Text size="sm" c="dimmed">Use tabs to jump between related settings while keeping one save action for the whole form.</Text>
+                      </div>
+                      <Badge variant="light" color="gray">{groupEntries.length} groups</Badge>
+                    </div>
+                    <Tabs.List className="settings-tabs-list">
+                      <Tabs.Tab value="all">All ({filteredCount})</Tabs.Tab>
+                      {groupEntries.map(([group, groupItems]) => <Tabs.Tab key={group} value={group}>{group} ({groupItems.length})</Tabs.Tab>)}
+                    </Tabs.List>
+                  </Stack>
+                </Paper>
+                <Tabs.Panel value="all" pt="lg">
+                  <Stack gap="lg">
+                    {groupEntries.map(([group, groupItems]) => renderGroup(group, groupItems))}
+                  </Stack>
+                </Tabs.Panel>
+                {groupEntries.map(([group, groupItems]) => (
+                  <Tabs.Panel key={group} value={group} pt="lg">
+                    {renderGroup(group, groupItems)}
+                  </Tabs.Panel>
+                ))}
+              </Tabs>
+            )}
             <div style={{ display: "flex", justifyContent: "end" }}><Button type="submit" disabled={groupEntries.length === 0}>Save Settings</Button></div>
           </Stack>
         </form>

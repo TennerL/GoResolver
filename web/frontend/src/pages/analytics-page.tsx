@@ -1,6 +1,6 @@
 import { Accordion, Badge, Button, Checkbox, Code, Container, Grid, Group, Modal, NativeSelect, Paper, SimpleGrid, Stack, Table, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { IconAdjustmentsHorizontal, IconAlertTriangle, IconMapPin, IconRefresh, IconSearch } from "@tabler/icons-react";
+import { IconAdjustmentsHorizontal, IconAlertTriangle, IconMapPin, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChartCard, MapCard, PageHeader, StatusBadge, buildLineOption, buildRankingOption, buildStatusOption, buildTopUrisOption, fetchJSON } from "../common";
 
@@ -218,7 +218,8 @@ function SummaryCard({ label, value, hint }) {
 }
 
 function AlertCard({ alert }) {
-  const color = alert.severity === "high" ? "red" : alert.severity === "medium" ? "orange" : "gray";
+  const color = alert.severity === "high" ? "blue" : alert.severity === "medium" ? "cyan" : "gray";
+  const tone = alert.severity === "high" ? "strong signal" : alert.severity === "medium" ? "moderate signal" : "context";
   return (
     <Paper radius="xl" p="lg" className="soft-panel">
       <Stack gap="sm">
@@ -227,7 +228,7 @@ function AlertCard({ alert }) {
             <Text size="sm" c="dimmed">{alert.title}</Text>
             <Title order={4}>{alert.value}</Title>
           </div>
-          <Badge color={color} variant="light">{alert.severity}</Badge>
+          <Badge color={color} variant="light">{tone}</Badge>
         </Group>
         <Text size="sm">{alert.summary}</Text>
         <Text size="xs" c="dimmed">Threshold: {alert.threshold}</Text>
@@ -336,6 +337,17 @@ export function AnalyticsPageView() {
       setReloadToken((value) => value + 1);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Failed to dismiss incident");
+    }
+  };
+
+  const deleteHistoryIncident = async (incident) => {
+    if (!incident?.id) return;
+    if (!window.confirm(`Delete incident history entry "${incident.title}"?`)) return;
+    try {
+      await fetchJSON(`/api/analytics/incidents/${incident.id}`, { method: "DELETE" });
+      setReloadToken((value) => value + 1);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Failed to delete incident history entry");
     }
   };
 
@@ -483,21 +495,24 @@ export function AnalyticsPageView() {
       <Paper radius="xl" p="lg" className="soft-panel" mb="lg">
         <Group justify="space-between" mb="md">
           <div>
-            <Title order={4}>Alerts and anomalies</Title>
-            <Text size="sm" c="dimmed">Derived from error rate, latency, traffic spikes, suspicious IP activity, and the current incident context.</Text>
+            <Title order={4}>Current slice findings</Title>
+            <Text size="sm" c="dimmed">Derived from error rate, latency, traffic spikes, and suspicious IP activity in the current analytics slice. These findings do not create incidents or send mail on their own.</Text>
           </div>
-          <Badge variant="light" color={observability.alerts.length ? "red" : "teal"} leftSection={<IconAlertTriangle size={12} />}>
+          <Badge variant="light" color={observability.alerts.length ? "blue" : "gray"} leftSection={<IconAlertTriangle size={12} />}>
             {observability.alerts.length || 0}
           </Badge>
         </Group>
         <SimpleGrid cols={{ base: 1, md: 2, xl: 4 }} spacing="lg">
           {observability.alerts.length
             ? observability.alerts.map((alert) => <AlertCard key={alert.id} alert={alert} />)
-            : <Paper radius="xl" p="lg" className="shell-panel"><Text c="dimmed">No active alerts for the current slice.</Text></Paper>}
+            : <Paper radius="xl" p="lg" className="shell-panel"><Text c="dimmed">No notable findings for the current slice.</Text></Paper>}
         </SimpleGrid>
         <Stack gap="sm" mt="lg">
           <Group justify="space-between">
-            <Title order={5}>Tracked incidents</Title>
+            <div>
+              <Title order={5}>Tracked incidents</Title>
+              <Text size="sm" c="dimmed">This section uses the settings-defined monitoring window, is not affected by dashboard filter changes, and is the only one tied to incident tracking and notifications.</Text>
+            </div>
             <Badge variant="light">{activeIncidents.length}</Badge>
           </Group>
           {activeIncidents.length ? activeIncidents.slice(0, 8).map((incident) => (
@@ -528,7 +543,7 @@ export function AnalyticsPageView() {
               </Accordion.Control>
               <Accordion.Panel>
                 <Stack gap="sm">
-                  {incidentHistory.length ? incidentHistory.slice(0, 8).map((incident) => (
+                  {incidentHistory.length ? incidentHistory.map((incident) => (
                     <Paper key={`history-${incident.id}`} radius="lg" p="md" className="shell-panel">
                       <Group justify="space-between" align="start">
                         <div>
@@ -539,6 +554,9 @@ export function AnalyticsPageView() {
                         <Group gap="xs">
                           <Badge variant="light">{incident.value}</Badge>
                           <Badge color={incident.status === "dismissed" ? "gray" : "blue"} variant="light">{incident.status}</Badge>
+                          <Button size="xs" variant="light" color="red" leftSection={<IconTrash size={14} />} onClick={() => void deleteHistoryIncident(incident)}>
+                            Delete
+                          </Button>
                         </Group>
                       </Group>
                     </Paper>

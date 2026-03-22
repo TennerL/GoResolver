@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -38,6 +39,12 @@ import (
 type ServerConfigurationService struct{}
 
 var ensureServerConfigurationSchemaOnce sync.Once
+var ensureCertificatesSchemaOnce sync.Once
+var certificateOperationMu sync.Mutex
+
+const (
+	certificateAutoRenewLeadTime = 30 * 24 * time.Hour
+)
 
 func NewServerConfigurationService() *ServerConfigurationService {
 	return &ServerConfigurationService{}
@@ -46,15 +53,76 @@ func NewServerConfigurationService() *ServerConfigurationService {
 func ensureServerConfigurationSchema() error {
 	var ensureErr error
 	ensureServerConfigurationSchemaOnce.Do(func() {
+		statements := []struct {
+			column string
+			query  string
+		}{
+			{
+				column: "hsts",
+				query: `
+					ALTER TABLE server_configuration
+					ADD COLUMN hsts TINYINT(1) NOT NULL DEFAULT 0 AFTER ssl_redirect
+				`,
+			},
+			{
+				column: "site_enabled",
+				query: `
+					ALTER TABLE server_configuration
+					ADD COLUMN site_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER server_name
+				`,
+			},
+			{
+				column: "proxy_connect_timeout",
+				query: `
+					ALTER TABLE server_configuration
+					ADD COLUMN proxy_connect_timeout INT NOT NULL DEFAULT 5 AFTER proxy_intercept_errors
+				`,
+			},
+			{
+				column: "proxy_read_timeout",
+				query: `
+					ALTER TABLE server_configuration
+					ADD COLUMN proxy_read_timeout INT NOT NULL DEFAULT 300 AFTER proxy_connect_timeout
+				`,
+			},
+			{
+				column: "proxy_send_timeout",
+				query: `
+					ALTER TABLE server_configuration
+					ADD COLUMN proxy_send_timeout INT NOT NULL DEFAULT 300 AFTER proxy_read_timeout
+				`,
+			},
+		}
+		for _, statement := range statements {
+			_, err := db.DB.Exec(statement.query)
+			if err == nil {
+				continue
+			}
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "duplicate column") || !strings.Contains(msg, statement.column) {
+				ensureErr = err
+				return
+			}
+		}
+	})
+	return ensureErr
+}
+
+func ensureCertificatesSchema() error {
+	var ensureErr error
+	ensureCertificatesSchemaOnce.Do(func() {
 		_, err := db.DB.Exec(`
-			ALTER TABLE server_configuration
-			ADD COLUMN hsts TINYINT(1) NOT NULL DEFAULT 0 AFTER ssl_redirect
+			CREATE TABLE IF NOT EXISTS certificates (
+				site_id BIGINT PRIMARY KEY,
+				domain VARCHAR(255) NOT NULL,
+				cert_path TEXT NOT NULL,
+				key_path TEXT NOT NULL,
+				expires_at DATETIME NOT NULL,
+				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+			)
 		`)
 		if err != nil {
-			msg := strings.ToLower(err.Error())
-			if !strings.Contains(msg, "duplicate column") || !strings.Contains(msg, "hsts") {
-				ensureErr = err
-			}
+			ensureErr = err
 		}
 	})
 	return ensureErr
@@ -65,11 +133,16 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 		log.Println("schema ensure failed:", err)
 		return nil
 	}
+	if err := ensureCertificatesSchema(); err != nil {
+		log.Println("certificate schema ensure failed:", err)
+		return nil
+	}
 
 	rows, err := db.DB.Query(`
 			SELECT
 				sc.id,
 				sc.server_name,
+				sc.site_enabled,
 				sc.server_port,
 			sc.ssl_enabled,
 			sc.ssl_redirect,
@@ -87,8 +160,9 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 			s.name,
 			IFNULL(c.cert_path, ''),
 			IFNULL(c.key_path, ''),
-			IFNULL(c.updated_at, ''),
-			IFNULL(c.expires_at, '')
+			IFNULL(DATE_FORMAT(c.updated_at, '%Y-%m-%d %H:%i:%s'), ''),
+			IFNULL(DATE_FORMAT(c.expires_at, '%Y-%m-%d %H:%i:%s'), ''),
+			IFNULL(DATE_FORMAT(DATE_SUB(c.expires_at, INTERVAL 30 DAY), '%Y-%m-%d %H:%i:%s'), '')
 		FROM server_configuration sc
 		LEFT JOIN servers s ON s.id = sc.fk_server
         LEFT JOIN certificates c ON c.site_id = sc.id
@@ -111,6 +185,7 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 		if err := rows.Scan(
 			&sc.ID,
 			&sc.Server_Name,
+			&sc.Site_Enabled,
 			&sc.Server_Port,
 			&sc.SSL_Enabled,
 			&sc.SSL_Redirect,
@@ -130,6 +205,7 @@ func (s *ServerConfigurationService) GetServerConfiguration(serverID string) []m
 			&sc.Key_Path,
 			&sc.Cert_Issued,
 			&sc.Cert_Expiration,
+			&sc.Cert_Renew_Scheduled,
 		); err != nil {
 			log.Println("Row scan error:", err)
 			continue
@@ -510,23 +586,31 @@ func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerC
 		INSERT INTO server_configuration (
 			fk_server,
 			server_name,
+			site_enabled,
 			server_port,
 			ssl_enabled,
 			ssl_redirect,
 			hsts,
 			proxy_pass_port,
 			proxy_intercept_errors,
+			proxy_connect_timeout,
+			proxy_read_timeout,
+			proxy_send_timeout,
 			websockets
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sc.ServerID,
 		sc.Server_Name,
+		sc.Site_Enabled,
 		sc.Server_Port,
 		sc.SSL_Enabled,
 		sc.SSL_Redirect,
 		sc.HSTS,
 		sc.Proxy_Pass_Port,
 		sc.Proxy_Intercept_Errors,
+		sc.Proxy_Connect_Timeout,
+		sc.Proxy_Read_Timeout,
+		sc.Proxy_Send_Timeout,
 		sc.Websockets,
 	)
 
@@ -537,7 +621,9 @@ func (s *ServerConfigurationService) InsertServerConfiguration(sc models.ServerC
 
 	rows, _ := result.RowsAffected()
 	log.Println("Rows inserted into server_configuration:", rows)
-	DeployNginxConfig(sc.Server_Name)
+	if err := DeployNginxConfig(sc.Server_Name); err != nil {
+		log.Println("nginx deploy failed:", err)
+	}
 
 	return nil
 }
@@ -547,24 +633,35 @@ func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerC
 		return err
 	}
 
+	oldServerName := strings.TrimSpace(sc.Server_Name)
+	_ = db.DB.QueryRow(`SELECT server_name FROM server_configuration WHERE id = ?`, sc.ID).Scan(&oldServerName)
+
 	result, err := db.DB.Exec(`
 		UPDATE server_configuration SET
 			server_name = ?,
+			site_enabled = ?,
 			server_port = ?,
 			ssl_enabled = ?,
 			ssl_redirect = ?,
 			hsts = ?,
 			proxy_pass_port = ?,
 			proxy_intercept_errors = ?,
+			proxy_connect_timeout = ?,
+			proxy_read_timeout = ?,
+			proxy_send_timeout = ?,
 			websockets = ?
 		WHERE id = ?`,
 		sc.Server_Name,
+		sc.Site_Enabled,
 		sc.Server_Port,
 		sc.SSL_Enabled,
 		sc.SSL_Redirect,
 		sc.HSTS,
 		sc.Proxy_Pass_Port,
 		sc.Proxy_Intercept_Errors,
+		sc.Proxy_Connect_Timeout,
+		sc.Proxy_Read_Timeout,
+		sc.Proxy_Send_Timeout,
 		sc.Websockets,
 		sc.ID,
 	)
@@ -574,7 +671,6 @@ func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerC
 	}
 	rows, _ := result.RowsAffected()
 	log.Println("Rows affected in server_configuration:", rows)
-	DeployNginxConfig(sc.Server_Name)
 
 	encryptedVPN, err := EncryptVPN(sc.VPN_File)
 	if err != nil {
@@ -596,6 +692,14 @@ func (s *ServerConfigurationService) UpdateServerConfiguration(sc models.ServerC
 	}
 	rows2, _ := result2.RowsAffected()
 	log.Println("Rows affected in servers:", rows2)
+	if oldServerName != "" && oldServerName != sc.Server_Name {
+		if err := DeployNginxConfig(oldServerName); err != nil {
+			log.Println("nginx cleanup deploy failed:", err)
+		}
+	}
+	if err := DeployNginxConfig(sc.Server_Name); err != nil {
+		log.Println("nginx deploy failed:", err)
+	}
 
 	return nil
 }
@@ -943,6 +1047,9 @@ func shouldEnableTransparentProxy() bool {
 func DeployNginxConfig(serverName string) error {
 	config, err := GenerateNginxConfig(serverName)
 	if err != nil {
+		if errors.Is(err, errNoNginxSiteConfiguration) {
+			return removeNginxSiteConfig(serverName)
+		}
 		return fmt.Errorf("generate config failed: %w", err)
 	}
 
@@ -969,6 +1076,10 @@ func DeployNginxConfig(serverName string) error {
 		return fmt.Errorf("nginx log config failed: %w", err)
 	}
 
+	return testAndReloadNginx()
+}
+
+func testAndReloadNginx() error {
 	testCmd := exec.Command("nginx", "-t")
 	testOut, err := testCmd.CombinedOutput()
 	if err != nil {
@@ -980,6 +1091,40 @@ func DeployNginxConfig(serverName string) error {
 		return fmt.Errorf("nginx reload failed:\n%s", string(out))
 	}
 
+	return nil
+}
+
+func removeNginxSiteConfig(serverName string) error {
+	serverName = strings.ReplaceAll(serverName, " ", "_")
+
+	settings := NewSettingsService()
+	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), serverName)
+	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), serverName)
+
+	if err := removeNginxPathIfPresent(enabledPath); err != nil {
+		return fmt.Errorf("remove enabled site failed: %w", err)
+	}
+	if err := removeNginxPathIfPresent(availablePath); err != nil {
+		return fmt.Errorf("remove available site failed: %w", err)
+	}
+
+	if err := ensureDefaultDenySite(); err != nil {
+		return fmt.Errorf("default deny config failed: %w", err)
+	}
+	if err := ensureNginxLogFormat(); err != nil {
+		return fmt.Errorf("nginx log config failed: %w", err)
+	}
+
+	return testAndReloadNginx()
+}
+
+func removeNginxPathIfPresent(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 
@@ -1111,32 +1256,7 @@ func ensureDefaultDenyCert() (string, string, error) {
 }
 
 func DeleteNginxConfig(serverName string) error {
-	serverName = strings.ReplaceAll(serverName, " ", "_")
-
-	settings := NewSettingsService()
-	availablePath := filepath.Join(settings.GetValue("paths.nginx_sites_available"), serverName)
-	enabledPath := filepath.Join(settings.GetValue("paths.nginx_sites_enabled"), serverName)
-
-	if err := os.Remove(availablePath); err != nil {
-		return fmt.Errorf("Delete from sites-avaliable failed.")
-	}
-
-	if err := os.Remove(enabledPath); err != nil {
-		return fmt.Errorf("Delete from sites-enabled failed.")
-	}
-
-	testCmd := exec.Command("nginx", "-t")
-	testOut, err := testCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("nginx -t failed:\n%s", string(testOut))
-	}
-
-	reloadCmd := exec.Command("nginx", "-s", "reload")
-	if out, err := reloadCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("nginx reload failed:\n%s", string(out))
-	}
-
-	return nil
+	return removeNginxSiteConfig(serverName)
 }
 
 func (s *ServerConfigurationService) Delete(id string, serverName string) error {
@@ -1148,7 +1268,9 @@ func (s *ServerConfigurationService) Delete(id string, serverName string) error 
 		log.Println("DELETE record failed:", err)
 	}
 
-	DeleteNginxConfig(serverName)
+	if deployErr := DeployNginxConfig(serverName); deployErr != nil {
+		log.Println("nginx deploy failed:", deployErr)
+	}
 
 	return err
 }
@@ -1408,6 +1530,12 @@ func (s *ServerConfigurationService) IssueCert(
 	siteID string,
 	domain string,
 ) error {
+	certificateOperationMu.Lock()
+	defer certificateOperationMu.Unlock()
+
+	if err := ensureCertificatesSchema(); err != nil {
+		return err
+	}
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -1472,18 +1600,27 @@ func (s *ServerConfigurationService) IssueCert(
 		return err
 	}
 
-	insertCert(
+	if err := insertCert(
 		siteID,
 		domain,
 		certPath,
 		keyPath,
 		expiry,
-	)
+	); err != nil {
+		return err
+	}
 
 	return nil
 }
 
 func (s *ServerConfigurationService) RenewCert(siteID string) error {
+	certificateOperationMu.Lock()
+	defer certificateOperationMu.Unlock()
+
+	if err := ensureCertificatesSchema(); err != nil {
+		return err
+	}
+
 	var certPath, domain, keyPath string
 	row := db.DB.QueryRow(`
 		SELECT cert_path, key_path, domain
@@ -1585,7 +1722,7 @@ func insertCert(
 	certPath string,
 	keyPath string,
 	expires time.Time,
-) {
+) error {
 	_, err := db.DB.Exec(`
 		INSERT INTO certificates
 			(site_id, domain, cert_path, key_path, expires_at)
@@ -1604,9 +1741,9 @@ func insertCert(
 		expires,
 	)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	activateSSL(siteID, domain)
+	return activateSSL(siteID, domain)
 }
 
 func updateCert(
@@ -1638,23 +1775,28 @@ func updateCert(
 		return fmt.Errorf("no certificate found for site_id=%s domain=%s", siteID, domain)
 	}
 
-	activateSSL(siteID, domain)
-	return nil
+	return activateSSL(siteID, domain)
 }
 
-func activateSSL(siteID string, domain string) {
+func activateSSL(siteID string, domain string) error {
 	_, err := db.DB.Exec(`
 		UPDATE server_configuration 
 		SET ssl_enabled = 1, server_port = 443, ssl_redirect = 1
 		WHERE id = ?
 	`, siteID)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	DeployNginxConfig(domain)
+	return DeployNginxConfig(domain)
 }
 
 func (s *ServerConfigurationService) DeleteCert(siteID string) error {
+	certificateOperationMu.Lock()
+	defer certificateOperationMu.Unlock()
+
+	if err := ensureCertificatesSchema(); err != nil {
+		return err
+	}
 
 	var certPath, domain, keyPath string
 	var privKey crypto.PrivateKey
@@ -1741,7 +1883,9 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 		return fmt.Errorf("failed to delete certificate from DB: %w", err)
 	}
 
-	fsRemoveCert(domain)
+	if err := fsRemoveCert(domain); err != nil {
+		return err
+	}
 
 	if err := DeployNginxConfig(domain); err != nil {
 		return fmt.Errorf("failed to deploy nginx config: %w", err)
@@ -1750,17 +1894,56 @@ func (s *ServerConfigurationService) DeleteCert(siteID string) error {
 	return nil
 }
 
-func fsRemoveCert(domain string) {
+func fsRemoveCert(domain string) error {
 	settings := NewSettingsService()
 	certPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".crt")
 	keyPath := filepath.Join(settings.GetValue("paths.ssl_dir"), domain+".key")
 
-	if err := os.Remove(certPath); err != nil {
-		log.Fatal(err)
+	if err := os.Remove(certPath); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	if err := os.Remove(keyPath); err != nil {
-		log.Fatal(err)
+	if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
+		return err
 	}
+	return nil
+}
+
+func certificateRenewSchedule(expiresAt time.Time) time.Time {
+	if expiresAt.IsZero() {
+		return time.Time{}
+	}
+	return expiresAt.Add(-certificateAutoRenewLeadTime)
+}
+
+func (s *ServerConfigurationService) DueCertificateSiteIDs(now time.Time, limit int) ([]string, error) {
+	if err := ensureCertificatesSchema(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	cutoff := now.UTC().Add(certificateAutoRenewLeadTime)
+	rows, err := db.DB.Query(`
+		SELECT CAST(site_id AS CHAR)
+		FROM certificates
+		WHERE expires_at <= ?
+		ORDER BY expires_at ASC, site_id ASC
+		LIMIT ?
+	`, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	siteIDs := make([]string, 0, limit)
+	for rows.Next() {
+		var siteID string
+		if err := rows.Scan(&siteID); err != nil {
+			return nil, err
+		}
+		siteIDs = append(siteIDs, strings.TrimSpace(siteID))
+	}
+	return siteIDs, rows.Err()
 }
 
 func (s *ServerConfigurationService) ListIPTablesRules() ([]models.IPTablesRule, error) {

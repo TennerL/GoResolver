@@ -60,6 +60,7 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/api/analytics/hosts", RequireAuthAPI(analyticsHandler.Hosts)).Methods("GET")
 	r.HandleFunc("/api/analytics/incidents", RequireAuthAPI(analyticsHandler.Incidents)).Methods("GET")
 	r.HandleFunc("/api/analytics/incidents/{id:[0-9]+}/dismiss", RequireAuthAPI(analyticsHandler.DismissIncident)).Methods("POST")
+	r.HandleFunc("/api/analytics/incidents/{id:[0-9]+}", RequireAuthAPI(analyticsHandler.DeleteIncident)).Methods("DELETE")
 	r.HandleFunc("/api/analytics/ips", RequireAuthAPI(analyticsHandler.IPs)).Methods("GET")
 	r.HandleFunc("/api/analytics/ip-geo", RequireAuthAPI(analyticsHandler.IPGeo)).Methods("GET")
 	r.HandleFunc("/api/analytics/logs", RequireAuthAPI(analyticsHandler.Logs)).Methods("GET")
