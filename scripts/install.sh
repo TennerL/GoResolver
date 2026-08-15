@@ -61,7 +61,7 @@ apt)
         fluent-bit \
         default-mysql-server default-mysql-client \
         nginx iptables fail2ban \
-        openvpn easy-rsa
+        openvpn easy-rsa npm
     ;;
     dnf)
       ${SUDO} dnf install -y \
@@ -485,8 +485,37 @@ else
      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);"
 fi
 
+sudo tee /var/log/nginx/access.db.json >/dev/null <<'EOF'
+log_format goresolver_json escape=json
+    '{"time":"$time_iso8601",'
+    '"remote_addr":"$remote_addr",'
+    '"x_forwarded_for":"$http_x_forwarded_for",'
+    '"method":"$request_method",'
+    '"uri":"$request_uri",'
+    '"status":$status,'
+    '"bytes":$body_bytes_sent,'
+    '"referer":"$http_referer",'
+    '"user_agent":"$http_user_agent",'
+    '"request_time":$request_time,'
+    '"upstream_time":"$upstream_response_time",'
+    '"host":"$host",'
+    '"ray_id":"$http_cf_ray"}';
+
+access_log /var/log/nginx/access.json goresolver_json;
+EOF
+
+cd ~/GoResolver/web/frontend
+
+npm ci
+npm run build
+
 echo "Downloading Go modules and building binary..."
 cd "${ROOT_DIR}"
+sed -i \
+'s/SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS error_requests/COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0) AS error_requests/g' \
+internal/services/analytics_service.go \
+internal/services/analytics_observability.go
+
 go mod download
 mkdir -p bin
 go build -o bin/goresolver ./cmd/server
