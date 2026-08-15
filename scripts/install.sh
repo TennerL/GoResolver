@@ -485,6 +485,32 @@ else
      ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);"
 fi
 
+sudo mkdir -p /var/lib/fluent-bit /var/log/nginx && \
+sudo tee /etc/fluent-bit/fluent-bit.conf >/dev/null <<'EOF'
+[SERVICE]
+    Flush         1
+    Daemon        Off
+    Log_Level     info
+
+[INPUT]
+    Name              tail
+    Path              /var/log/nginx/access.json
+    Tag               nginx.access
+    Parser            json
+    DB                /var/lib/fluent-bit/nginx-tail.db
+    DB.Sync           Normal
+    Read_from_Head    True
+    Refresh_Interval  5
+    Skip_Long_Lines   On
+
+[OUTPUT]
+    Name    file
+    Match   nginx.access
+    Path    /var/log/nginx
+    File    access.db.json
+    Format  plain
+EOF
+
 sudo tee /var/log/nginx/access.db.json >/dev/null <<'EOF'
 log_format goresolver_json escape=json
     '{"time":"$time_iso8601",'
@@ -503,6 +529,10 @@ log_format goresolver_json escape=json
 
 access_log /var/log/nginx/access.json goresolver_json;
 EOF
+
+
+sudo systemctl restart fluent-bit
+sudo systemctl status fluent-bit --no-pager
 
 cd ~/GoResolver/web/frontend
 
