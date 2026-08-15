@@ -335,7 +335,8 @@ if [[ -z "${APP_DB_PASSWORD}" ]]; then
 fi
 
 prompt APP_LISTEN_ADDR "App listen address" ":8888"
-prompt APP_BASE_URL "App base URL" "http://localhost:8888"
+echo "Do not use port 80 or 443. You will be asked to configure reverse-proxy with a self signed certificate to start."
+prompt APP_BASE_URL "App base URL (pls set your host here for example goresolver.com:8888)" "http://localhost:8888"
 
 APP_BASE_HOST="$(printf "%s" "${APP_BASE_URL}" | sed -E 's|^[a-zA-Z]+://||; s|/.*$||; s|:.*$||')"
 if [[ -z "${APP_BASE_HOST}" ]]; then
