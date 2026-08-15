@@ -390,16 +390,16 @@ write_openvpn_server_config \
 enable_openvpn_service "${OPENVPN_SERVER_CONF}"
 OPENVPN_EASYRSA_PATH="${OPENVPN_CA_DIR}/easyrsa"
 
-if [[ -z "${MYSQL_ROOT_PASSWORD}" ]] \
-    && [[ "${MYSQL_HOST}" == "127.0.0.1" || "${MYSQL_HOST}" == "localhost" ]]; then
+MYSQL_USE_SOCKET_AUTH=0
 
-    # Debian/MariaDB: root normally authenticates via Unix socket.
-    MYSQL_USE_SOCKET_AUTH=1
+if [[ "${MYSQL_HOST}" == "127.0.0.1" || "${MYSQL_HOST}" == "localhost" ]]; then
+    if ${SUDO} mysql -u root -e "SELECT 1;" >/dev/null 2>&1; then
+        MYSQL_USE_SOCKET_AUTH=1
+        echo "Using local MariaDB root socket authentication."
+    fi
+fi
 
-else
-
-    MYSQL_USE_SOCKET_AUTH=0
-
+if [[ "${MYSQL_USE_SOCKET_AUTH}" == "0" ]]; then
     MYSQL_ARGS=(
         -h "${MYSQL_HOST}"
         -P "${MYSQL_PORT}"
@@ -409,6 +409,8 @@ else
     if [[ -n "${MYSQL_ROOT_PASSWORD}" ]]; then
         MYSQL_ARGS+=("-p${MYSQL_ROOT_PASSWORD}")
     fi
+
+    echo "Using MySQL credentials for ${MYSQL_ROOT_USER}@${MYSQL_HOST}."
 fi
 
 mysql_exec() {
