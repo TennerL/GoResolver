@@ -728,6 +728,9 @@ sed -i \
 internal/services/analytics_service.go \
 internal/services/analytics_observability.go
 
+sed -i 's/SELECT id, domain_id, name, ip FROM servers ORDER BY id/SELECT id, COALESCE(domain_id, 0) AS domain_id, name, ip FROM servers ORDER BY id/' \
+internal/services/server_service.go
+
 go mod download
 mkdir -p bin
 go build -o bin/goresolver ./cmd/server
@@ -750,6 +753,11 @@ echo "  Admin user: ${ADMIN_USER}"
 echo "  DB user:    ${APP_DB_USER}"
 echo
 echo "Environment file written to ${ENV_FILE}"
+echo "Run with su, to enable root user type 'sudo passwd root' and set your password."
+echo "If you dont want to use root, so help you god setting permissions."
 echo "Run with:"
+echo "  su"
 echo "  export DB_DSN='${DB_DSN}'"
+echo "  export GORESOLVER_SESSION_SECRET='PLEASE GENERATE-SCRET-KEY'"
+echo "  export GORESOLVER_VPN_ENCRYPTION_SECRET='PLEASE GENERATE-SECRET-KEY'"
 echo "  ./bin/goresolver"
