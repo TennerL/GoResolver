@@ -72,15 +72,24 @@ EOF
 sudo systemctl enable --now gresolver-tproxy-routes
 ```
 
-## 5) iptables mangle rules (mark local sockets)
+## 5) iptables mangle rules
 ```bash
-sudo iptables -t mangle -N GR_TPROXY 2>/dev/null || true
-sudo iptables -t mangle -F GR_TPROXY
-sudo iptables -t mangle -A GR_TPROXY -j MARK --set-mark 1
-sudo iptables -t mangle -A GR_TPROXY -j ACCEPT
+sudo iptables -t mangle -N DIVERT
 
-sudo iptables -t mangle -A PREROUTING -p tcp -m socket -j GR_TPROXY
-sudo iptables -t mangle -A OUTPUT -p tcp -m owner --uid-owner www-data -j MARK --set-mark 1
+sudo iptables -t mangle -A PREROUTING \
+    -p tcp \
+    -m socket --transparent \
+    -j DIVERT
+
+sudo iptables -t mangle -A DIVERT \
+    -j MARK --set-mark 1
+
+sudo iptables -t mangle -A DIVERT \
+    -j ACCEPT
+
+sudo ip rule add fwmark 1 lookup 100
+
+sudo ip route add local 0.0.0.0/0 dev lo table 100
 ```
 
 Persist (choose one):
