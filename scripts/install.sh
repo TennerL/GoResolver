@@ -582,6 +582,135 @@ else
     echo "Skipping self-signed certificate creation."
 fi
 
+# --------------------------------------------------
+# nginx reverse proxy for GoResolver
+# --------------------------------------------------
+
+echo "Installing nginx reverse proxy configuration..."
+
+NGINX_SITE="/etc/nginx/conf.d/goresolver.conf"
+
+# Extract application port from values such as:
+# :8888
+# 127.0.0.1:8888
+# 0.0.0.0:8888
+APP_PORT="${APP_LISTEN_ADDR##*:}"
+
+if [[ -z "${APP_PORT}" || ! "${APP_PORT}" =~ ^[0-9]+$ ]]; then
+    echo "Could not determine application port from APP_LISTEN_ADDR=${APP_LISTEN_ADDR}" >&2
+    exit 1
+fi
+
+APP_UPSTREAM="127.0.0.1:${APP_PORT}"
+
+echo "GoResolver upstream: ${APP_UPSTREAM}"
+
+if [[ "${CREATE_SELF_SIGNED_CERT:-n}" == "y" || "${CREATE_SELF_SIGNED_CERT:-n}" == "yes" ]]; then
+
+    echo "Configuring nginx HTTPS reverse proxy..."
+
+    ${SUDO} tee "${NGINX_SITE}" >/dev/null <<EOF
+# GoResolver reverse proxy
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name ${CERT_HOST};
+
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name ${CERT_HOST};
+
+    ssl_certificate     ${CERT_FILE};
+    ssl_certificate_key ${KEY_FILE};
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://${APP_UPSTREAM};
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # WebSocket support
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+}
+EOF
+
+else
+
+    echo "Configuring nginx HTTP reverse proxy..."
+
+    ${SUDO} tee "${NGINX_SITE}" >/dev/null <<EOF
+# GoResolver reverse proxy
+
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name ${APP_BASE_HOST};
+
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://${APP_UPSTREAM};
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # WebSocket support
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+}
+EOF
+
+fi
+
+echo "Testing nginx configuration..."
+
+if ! ${SUDO} nginx -t; then
+    echo "nginx configuration test failed." >&2
+    exit 1
+fi
+
+echo "Reloading nginx..."
+${SUDO} systemctl reload nginx
+
+echo "nginx reverse proxy installed successfully."
+
+if [[ "${CREATE_SELF_SIGNED_CERT:-n}" == "y" || "${CREATE_SELF_SIGNED_CERT:-n}" == "yes" ]]; then
+    echo "GoResolver URL: https://${CERT_HOST}/"
+else
+    echo "GoResolver URL: http://${APP_BASE_HOST}/"
+fi
 
 sudo systemctl restart fluent-bit
 sudo systemctl status fluent-bit --no-pager
