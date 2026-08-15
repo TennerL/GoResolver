@@ -34,16 +34,35 @@ install_dependencies() {
   local pm
   pm="$(detect_pkg_manager)"
   case "${pm}" in
-    apt)
-      ${SUDO} apt-get update
-      ${SUDO} apt-get install -y \
-        ca-certificates curl git \
+apt)
+    ${SUDO} apt-get update
+
+    # Packages needed for external repositories
+    ${SUDO} apt-get install -y \
+        ca-certificates curl gnupg git
+
+    # Fluent Bit repository
+    if [[ ! -f /usr/share/keyrings/fluentbit-keyring.gpg ]]; then
+        curl -fsSL https://packages.fluentbit.io/fluentbit.key \
+            | gpg --dearmor \
+            | ${SUDO} tee /usr/share/keyrings/fluentbit-keyring.gpg >/dev/null
+    fi
+
+    . /etc/os-release
+    CODENAME="${VERSION_CODENAME:-bookworm}"
+
+    echo "deb [signed-by=/usr/share/keyrings/fluentbit-keyring.gpg] https://packages.fluentbit.io/debian/${CODENAME} ${CODENAME} main" \
+        | ${SUDO} tee /etc/apt/sources.list.d/fluent-bit.list >/dev/null
+
+    ${SUDO} apt-get update
+
+    ${SUDO} apt-get install -y \
         golang-go \
         fluent-bit \
-        mysql-server mysql-client \
+        default-mysql-server default-mysql-client \
         nginx iptables fail2ban \
         openvpn easy-rsa
-      ;;
+    ;;
     dnf)
       ${SUDO} dnf install -y \
         ca-certificates curl git \
@@ -277,7 +296,10 @@ echo "Installing system dependencies..."
 install_dependencies
 
 echo "Ensuring services are enabled..."
-${SUDO} systemctl enable --now mysql 2>/dev/null || ${SUDO} systemctl enable --now mysqld 2>/dev/null || true
+${SUDO} systemctl enable --now mariadb 2>/dev/null \
+    || ${SUDO} systemctl enable --now mysql 2>/dev/null \
+    || ${SUDO} systemctl enable --now mysqld 2>/dev/null \
+    || true
 ${SUDO} systemctl enable --now nginx 2>/dev/null || true
 
 echo "Installing Fluent Bit configuration..."
@@ -368,11 +390,32 @@ write_openvpn_server_config \
 enable_openvpn_service "${OPENVPN_SERVER_CONF}"
 OPENVPN_EASYRSA_PATH="${OPENVPN_CA_DIR}/easyrsa"
 
-MYSQL_ARGS=(-h "${MYSQL_HOST}" -P "${MYSQL_PORT}" -u "${MYSQL_ROOT_USER}")
-if [[ -n "${MYSQL_ROOT_PASSWORD}" ]]; then
-  MYSQL_ARGS+=("-p${MYSQL_ROOT_PASSWORD}")
+if [[ -z "${MYSQL_ROOT_PASSWORD}" ]] \
+    && [[ "${MYSQL_HOST}" == "127.0.0.1" || "${MYSQL_HOST}" == "localhost" ]]; then
+
+    # Debian/MariaDB default: root authenticates through Unix socket.
+    MYSQL_USE_SOCKET_AUTH=1
+else
+    MYSQL_USE_SOCKET_AUTH=0
+
+    MYSQL_ARGS=(
+        -h "${MYSQL_HOST}"
+        -P "${MYSQL_PORT}"
+        -u "${MYSQL_ROOT_USER}"
+    )
+
+    if [[ -n "${MYSQL_ROOT_PASSWORD}" ]]; then
+        MYSQL_ARGS+=("-p${MYSQL_ROOT_PASSWORD}")
+    fi
 fi
 
+mysql_exec() {
+    if [[ "${MYSQL_USE_SOCKET_AUTH}" == "1" ]]; then
+        ${SUDO} mysql "$@"
+    else
+        mysql "${MYSQL_ARGS[@]}" "$@"
+    fi
+}
 mysql_exec() {
   mysql "${MYSQL_ARGS[@]}" "$@"
 }
