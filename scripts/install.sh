@@ -61,7 +61,7 @@ apt)
         fluent-bit \
         default-mysql-server default-mysql-client \
         nginx iptables fail2ban \
-        openvpn easy-rsa npm
+        openvpn easy-rsa npm openssl
     ;;
     dnf)
       ${SUDO} dnf install -y \
@@ -69,7 +69,7 @@ apt)
         golang \
         mysql-server mysql \
         nginx iptables-nft fail2ban \
-        openvpn easy-rsa
+        openvpn easy-rsa npm openssl
       ;;
     *)
       echo "Unsupported package manager. Install dependencies manually and rerun." >&2
@@ -530,11 +530,64 @@ log_format goresolver_json escape=json
 access_log /var/log/nginx/access.json goresolver_json;
 EOF
 
+# --------------------------------------------------
+# Optional self-signed TLS certificate
+# --------------------------------------------------
+
+read -r -p "Create a self-signed HTTPS certificate? [y/N]: " CREATE_SELF_SIGNED_CERT
+CREATE_SELF_SIGNED_CERT="${CREATE_SELF_SIGNED_CERT,,}"
+
+if [[ "${CREATE_SELF_SIGNED_CERT}" == "y" || "${CREATE_SELF_SIGNED_CERT}" == "yes" ]]; then
+
+    CERT_DIR="/etc/nginx/ssl"
+    CERT_FILE="${CERT_DIR}/goresolver.crt"
+    KEY_FILE="${CERT_DIR}/goresolver.key"
+
+    prompt CERT_HOST "Certificate hostname/IP" "${APP_BASE_HOST}"
+    prompt CERT_DAYS "Certificate validity in days" "3650"
+
+    echo "Creating self-signed certificate for ${CERT_HOST}..."
+
+    ${SUDO} mkdir -p "${CERT_DIR}"
+
+    # Determine whether the supplied value is an IP address or hostname
+    if [[ "${CERT_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        CERT_SAN="IP:${CERT_HOST}"
+    else
+        CERT_SAN="DNS:${CERT_HOST}"
+    fi
+
+    ${SUDO} openssl req \
+        -x509 \
+        -nodes \
+        -newkey rsa:4096 \
+        -sha256 \
+        -days "${CERT_DAYS}" \
+        -keyout "${KEY_FILE}" \
+        -out "${CERT_FILE}" \
+        -subj "/CN=${CERT_HOST}" \
+        -addext "subjectAltName=${CERT_SAN}"
+
+    ${SUDO} chmod 600 "${KEY_FILE}"
+    ${SUDO} chmod 644 "${CERT_FILE}"
+
+    echo
+    echo "Self-signed certificate created:"
+    echo "  Certificate: ${CERT_FILE}"
+    echo "  Private key: ${KEY_FILE}"
+    echo "  Host:        ${CERT_HOST}"
+    echo "  Valid for:   ${CERT_DAYS} days"
+    echo
+else
+    echo "Skipping self-signed certificate creation."
+fi
+
 
 sudo systemctl restart fluent-bit
 sudo systemctl status fluent-bit --no-pager
 
-cd ~/GoResolver/web/frontend
+echo "Building frontend..."
+cd "${ROOT_DIR}/web/frontend"
 
 npm ci
 npm run build
