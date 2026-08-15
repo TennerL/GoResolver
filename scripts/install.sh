@@ -393,9 +393,11 @@ OPENVPN_EASYRSA_PATH="${OPENVPN_CA_DIR}/easyrsa"
 if [[ -z "${MYSQL_ROOT_PASSWORD}" ]] \
     && [[ "${MYSQL_HOST}" == "127.0.0.1" || "${MYSQL_HOST}" == "localhost" ]]; then
 
-    # Debian/MariaDB default: root authenticates through Unix socket.
+    # Debian/MariaDB: root normally authenticates via Unix socket.
     MYSQL_USE_SOCKET_AUTH=1
+
 else
+
     MYSQL_USE_SOCKET_AUTH=0
 
     MYSQL_ARGS=(
@@ -411,13 +413,10 @@ fi
 
 mysql_exec() {
     if [[ "${MYSQL_USE_SOCKET_AUTH}" == "1" ]]; then
-        ${SUDO} mysql "$@"
+        ${SUDO} mysql -u root "$@"
     else
         mysql "${MYSQL_ARGS[@]}" "$@"
     fi
-}
-mysql_exec() {
-  mysql "${MYSQL_ARGS[@]}" "$@"
 }
 
 echo "Creating database and user..."
