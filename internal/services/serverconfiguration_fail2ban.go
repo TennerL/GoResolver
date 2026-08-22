@@ -431,6 +431,36 @@ func (s *ServerConfigurationService) banFail2BanIP(p models.Fail2BanPolicy, serv
 	return nil
 }
 
+func (s *ServerConfigurationService) ListAllActiveFail2BanBans() ([]models.Fail2BanBan, error) {
+	if err := s.EnsureFail2BanTables(); err != nil {
+		return nil, err
+	}
+	rows, err := db.DB.Query(`
+		SELECT CAST(b.server_id AS CHAR), COALESCE(s.name, CONCAT('Server ', b.server_id)),
+			b.ip, b.hit_count,
+			DATE_FORMAT(b.banned_at, '%Y-%m-%d %H:%i:%s'),
+			DATE_FORMAT(b.expires_at, '%Y-%m-%d %H:%i:%s')
+		FROM fail2ban_bans b
+		LEFT JOIN servers s ON s.id = b.server_id
+		WHERE b.expires_at > NOW()
+		ORDER BY b.banned_at DESC, b.ip ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	bans := make([]models.Fail2BanBan, 0)
+	for rows.Next() {
+		var ban models.Fail2BanBan
+		if err := rows.Scan(&ban.ServerID, &ban.ServerName, &ban.IP, &ban.HitCount, &ban.BannedAt, &ban.ExpiresAt); err != nil {
+			return nil, err
+		}
+		bans = append(bans, ban)
+	}
+	return bans, rows.Err()
+}
+
 func (s *ServerConfigurationService) cleanupExpiredFail2BanBans() error {
 	now := time.Now().UTC()
 	rows, err := db.DB.Query(`

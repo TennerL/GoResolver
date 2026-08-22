@@ -84,6 +84,7 @@ type AnalyticsSnapshot struct {
 	TopIPs           analyticsTopIPs      `json:"top_ips"`
 	Summary          AnalyticsSummary     `json:"summary"`
 	CacheOnly        bool                 `json:"cache_only"`
+	RetentionDays    int                  `json:"retention_days"`
 }
 
 type analyticsSnapshotCacheEntry struct {
@@ -304,6 +305,7 @@ func (s *AnalyticsService) Snapshot(filters AnalyticsFilters) (AnalyticsSnapshot
 
 	snapshot := value.(AnalyticsSnapshot)
 	snapshot.CacheOnly = normalized.CacheOnly
+	snapshot.RetentionDays = analyticsRetentionDays()
 	return snapshot, nil
 }
 
@@ -910,6 +912,9 @@ func (s *AnalyticsService) IPGeoPoints(filters AnalyticsFilters) ([]IPGeoPoint, 
 	}
 
 	filters = normalizeAnalyticsFilters(filters)
+	if filters.CacheOnly {
+		return s.cachedIPGeoPoints(filters)
+	}
 
 	ips, err := s.UniqueIPs(filters)
 	if err != nil {
@@ -943,6 +948,34 @@ func (s *AnalyticsService) IPGeoPoints(filters AnalyticsFilters) ([]IPGeoPoint, 
 		})
 	}
 	return points, nil
+}
+
+func (s *AnalyticsService) cachedIPGeoPoints(filters AnalyticsFilters) ([]IPGeoPoint, error) {
+	whereClause, args := analyticsWhereClause(filters)
+	query := fmt.Sprintf(`
+		SELECT DISTINCT geo.ip, geo.lat, geo.lon, geo.city, geo.region, geo.country, geo.isp
+		FROM nginx_logs logs
+		JOIN ip_geolocation geo ON geo.ip = TRIM(logs.remote_addr)
+		%s
+		ORDER BY geo.ip
+	`, whereClause)
+	rows, err := db.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	points := make([]IPGeoPoint, 0)
+	for rows.Next() {
+		var point IPGeoPoint
+		if err := rows.Scan(&point.IP, &point.Lat, &point.Lon, &point.City, &point.Region, &point.Country, &point.ISP); err != nil {
+			return nil, err
+		}
+		if point.Lat != 0 || point.Lon != 0 {
+			points = append(points, point)
+		}
+	}
+	return points, rows.Err()
 }
 
 func abuseIPDBCacheTTL() time.Duration {

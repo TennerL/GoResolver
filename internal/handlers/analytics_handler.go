@@ -11,13 +11,24 @@ import (
 )
 
 type AnalyticsHandler struct {
-	Service *services.AnalyticsService
+	Service       *services.AnalyticsService
+	ServerService *services.ServerConfigurationService
 }
 
 func NewAnalyticsHandler() *AnalyticsHandler {
 	return &AnalyticsHandler{
-		Service: services.NewAnalyticsService(),
+		Service:       services.NewAnalyticsService(),
+		ServerService: services.NewServerConfigurationService(),
 	}
+}
+
+func (h *AnalyticsHandler) Fail2BanBans(w http.ResponseWriter, r *http.Request) {
+	bans, err := h.ServerService.ListAllActiveFail2BanBans()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, bans)
 }
 
 func parseAnalyticsTime(raw string) (time.Time, bool) {

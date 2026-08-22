@@ -161,6 +161,40 @@ func TestPrepareSettingsValuesForSaveKeepsExistingDNSSECKey(t *testing.T) {
 	}
 }
 
+func TestPrepareSettingsValuesForSaveIgnoresBlankDNSSECKeyReplacement(t *testing.T) {
+	existingKey, err := generateDNSSECPrivateKeyPEM()
+	if err != nil {
+		t.Fatalf("generateDNSSECPrivateKeyPEM() error: %v", err)
+	}
+
+	prepared, err := prepareSettingsValuesForSave(map[string]string{
+		"dns.dnssec_enabled":         "1",
+		"dns.dnssec_private_key_pem": existingKey,
+	}, map[string]string{
+		"dns.dnssec_enabled":         "1",
+		"dns.dnssec_private_key_pem": "",
+		"acme.email":                 "changed@example.com",
+	})
+	if err != nil {
+		t.Fatalf("prepareSettingsValuesForSave() returned error: %v", err)
+	}
+	if _, ok := prepared["dns.dnssec_private_key_pem"]; ok {
+		t.Fatal("blank DNSSEC key update must not overwrite an existing key")
+	}
+	if got := prepared["acme.email"]; got != "changed@example.com" {
+		t.Fatalf("unrelated setting was not prepared, got %q", got)
+	}
+}
+
+func TestPrepareSettingsValuesForSaveRejectsInvalidDNSSECKey(t *testing.T) {
+	_, err := prepareSettingsValuesForSave(map[string]string{}, map[string]string{
+		"dns.dnssec_private_key_pem": "not a private key",
+	})
+	if err == nil {
+		t.Fatal("expected invalid DNSSEC key to be rejected")
+	}
+}
+
 func TestBuildDNSSECRegistrarValuesIncludesRegistrarFields(t *testing.T) {
 	publicKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
 

@@ -77,9 +77,10 @@ type Fail2BanPolicy struct {
 }
 
 type Fail2BanBan struct {
-	ServerID  string
-	IP        string
-	HitCount  int
-	BannedAt  string
-	ExpiresAt string
+	ServerID   string
+	ServerName string
+	IP         string
+	HitCount   int
+	BannedAt   string
+	ExpiresAt  string
 }

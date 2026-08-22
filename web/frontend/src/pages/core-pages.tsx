@@ -339,16 +339,13 @@ export function SettingsPageView({ page }) {
                     </Tabs.List>
                   </Stack>
                 </Paper>
-                <Tabs.Panel value="all" pt="lg">
-                  <Stack gap="lg">
-                    {groupEntries.map(([group, groupItems]) => renderGroup(group, groupItems))}
-                  </Stack>
-                </Tabs.Panel>
-                {groupEntries.map(([group, groupItems]) => (
-                  <Tabs.Panel key={group} value={group} pt="lg">
-                    {renderGroup(group, groupItems)}
-                  </Tabs.Panel>
-                ))}
+                <Stack gap="lg" mt="lg">
+                  {groupEntries.map(([group, groupItems]) => (
+                    <div key={group} style={{ display: activeGroup === "all" || activeGroup === group ? "block" : "none" }}>
+                      {renderGroup(group, groupItems)}
+                    </div>
+                  ))}
+                </Stack>
               </Tabs>
             )}
             <div style={{ display: "flex", justifyContent: "end" }}><Button type="submit" disabled={groupEntries.length === 0}>Save Settings</Button></div>

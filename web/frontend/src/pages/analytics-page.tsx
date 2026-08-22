@@ -28,11 +28,7 @@ const emptyAnalytics = {
   methods: {},
   top_ips: { labels: [], values: [], urls: [] },
   summary: { total_requests: 0, unique_ips: 0, error_requests: 0, error_rate: 0, avg_request_time_ms: 0, transferred_bytes: 0 },
-  cache_only: false
-};
-
-const emptyObservability = {
-  alerts: [],
+  cache_only: false,
   retention_days: 30
 };
 
@@ -158,20 +154,18 @@ function buildAnalyticsUrl(filters) {
   return `/api/analytics?${buildAnalyticsQuery(filters)}`;
 }
 
-function buildIPsUrl(filters) {
-  return `/api/analytics/ips?${buildAnalyticsQuery(filters)}`;
-}
-
 function buildGeoUrl(filters) {
-  return `/api/analytics/ip-geo?${buildAnalyticsQuery(filters)}`;
-}
-
-function buildAlertsUrl(filters) {
-  return `/api/analytics/alerts?${buildAnalyticsQuery(filters)}`;
+  const params = new URLSearchParams(buildAnalyticsQuery(filters));
+  params.set("cache_only", "1");
+  return `/api/analytics/ip-geo?${params.toString()}`;
 }
 
 function buildIncidentsUrl() {
   return "/api/analytics/incidents";
+}
+
+function buildFail2BanBansUrl() {
+  return "/api/analytics/fail2ban-bans";
 }
 
 function buildLogsUrl(filters, limit = 50, offset = 0) {
@@ -248,9 +242,8 @@ export function AnalyticsPageView() {
   const [reloadToken, setReloadToken] = useState(0);
   const [hosts, setHosts] = useState([]);
   const [analytics, setAnalytics] = useState(emptyAnalytics);
-  const [observability, setObservability] = useState(emptyObservability);
   const [incidents, setIncidents] = useState([]);
-  const [ips, setIps] = useState([]);
+  const [fail2banBans, setFail2banBans] = useState([]);
   const [points, setPoints] = useState([]);
   const [logs, setLogs] = useState(emptyLogSearch);
   const [logPage, setLogPage] = useState(1);
@@ -261,7 +254,6 @@ export function AnalyticsPageView() {
   const inFlightRef = useRef(false);
 
   const filterBadges = useMemo(() => summarizeFilters(filters), [filters]);
-  const cacheOnly = !!analytics?.cache_only;
   const activeIncidents = useMemo(
     () => (incidents || []).filter((incident) => incident.status === "open"),
     [incidents]
@@ -376,22 +368,20 @@ export function AnalyticsPageView() {
       inFlightRef.current = true;
       setLoading(true);
       try {
-        const [nextAnalytics, nextIps, nextPoints, nextObservability, nextIncidents, nextLogs] = await Promise.all([
+        const [nextAnalytics, nextPoints, nextIncidents, nextBans, nextLogs] = await Promise.all([
           fetchJSON(buildAnalyticsUrl(filters), { signal: controller.signal }),
-          fetchJSON(buildIPsUrl(filters), { signal: controller.signal }),
           fetchJSON(buildGeoUrl(filters), { signal: controller.signal }),
-          fetchJSON(buildAlertsUrl(filters), { signal: controller.signal }),
           fetchJSON(buildIncidentsUrl(), { signal: controller.signal }),
+          fetchJSON(buildFail2BanBansUrl(), { signal: controller.signal }),
           fetchJSON(buildLogsUrl(filters, logPageSize, (logPage - 1) * logPageSize), { signal: controller.signal })
         ]);
 
         if (cancelled) return;
 
         setAnalytics(nextAnalytics && typeof nextAnalytics === "object" ? { ...emptyAnalytics, ...nextAnalytics } : emptyAnalytics);
-        setIps(Array.isArray(nextIps) ? nextIps : []);
         setPoints(Array.isArray(nextPoints) ? nextPoints : []);
-        setObservability(nextObservability && typeof nextObservability === "object" ? { ...emptyObservability, ...nextObservability } : emptyObservability);
         setIncidents(Array.isArray(nextIncidents) ? nextIncidents : []);
+        setFail2banBans(Array.isArray(nextBans) ? nextBans : []);
         setLogs(nextLogs && typeof nextLogs === "object" ? { ...emptyLogSearch, ...nextLogs } : emptyLogSearch);
         setLastLoadedAt(new Date().toISOString());
       } catch (error) {
@@ -433,10 +423,10 @@ export function AnalyticsPageView() {
         description="Alerts, searchable logs, longer retention controls, and IP drill-downs for incident handling."
         actions={
           <Group gap="sm">
-            <Button variant="subtle" color="gray" px="sm" onClick={notificationsModal.open} aria-label={`Open notification center (${activeIncidents.length} open)`}>
+            <Button variant="subtle" color="gray" px="sm" onClick={notificationsModal.open} aria-label={`Open notification center (${activeIncidents.length + fail2banBans.length} active)`}>
               <Group gap={6} wrap="nowrap">
                 <IconBell size={18} />
-                {activeIncidents.length ? <Badge color="red" variant="filled" size="sm" circle>{activeIncidents.length}</Badge> : null}
+                {activeIncidents.length + fail2banBans.length ? <Badge color="red" variant="filled" size="sm" circle>{activeIncidents.length + fail2banBans.length}</Badge> : null}
               </Group>
             </Button>
             <NativeSelect data={refreshIntervalOptions} value={refreshInterval} onChange={(event) => setRefreshInterval(event.currentTarget.value)} />
@@ -455,8 +445,8 @@ export function AnalyticsPageView() {
           <Group gap="sm">
             {filterBadges.length === 0 ? <Badge variant="light" color="gray">Default slice</Badge> : filterBadges.map((item) => <Badge key={item} variant="light" color="gray">{item}</Badge>)}
             {filters.excludeInternalAPI ? <Badge variant="light" color="teal">Internal API excluded</Badge> : <Badge variant="light" color="orange">Internal API included</Badge>}
-            {cacheOnly ? <Badge variant="light" color="orange">Filtered view: cached reputation only</Badge> : <Badge variant="light" color="teal">Live reputation allowed</Badge>}
-            <Badge variant="light" color="blue">Retention {observability.retention_days} days</Badge>
+            <Badge variant="light" color="teal">Reputation enriched in background</Badge>
+            <Badge variant="light" color="blue">Retention {analytics.retention_days || 30} days</Badge>
           </Group>
           <Text size="sm" c="dimmed">
             {lastLoadedAt ? `Last updated ${formatDateTime(lastLoadedAt)}.` : "Loading current analytics slice."} Use the quick search for IPs, ISPs, hosts, or paths, then open any IP directly from the log table.
@@ -567,9 +557,33 @@ export function AnalyticsPageView() {
       <Modal opened={notificationsOpened} onClose={notificationsModal.close} title="Notification center" size="xl" centered>
         <Stack gap="sm">
           <Group justify="space-between">
-            <Text size="sm" c="dimmed">Tracked incidents use the settings-defined monitoring window and are independent of the dashboard filters.</Text>
-            <Badge color={activeIncidents.length ? "red" : "gray"} variant="light">{activeIncidents.length} open</Badge>
+            <Text size="sm" c="dimmed">Active security notifications across all managed servers.</Text>
+            <Badge color={activeIncidents.length + fail2banBans.length ? "red" : "gray"} variant="light">{activeIncidents.length + fail2banBans.length} active</Badge>
           </Group>
+          <Group justify="space-between" mt="sm">
+            <Title order={5}>Fail2Ban bans</Title>
+            <Badge color={fail2banBans.length ? "red" : "gray"} variant="light">{fail2banBans.length}</Badge>
+          </Group>
+          {fail2banBans.length ? fail2banBans.map((ban) => (
+            <Paper key={`${ban.ServerID}-${ban.IP}`} radius="lg" p="md" className="shell-panel">
+              <Group justify="space-between" align="start">
+                <div>
+                  <Group gap="xs">
+                    <Code className="code-chip">{ban.IP}</Code>
+                    <Badge color="red" variant="light">banned</Badge>
+                  </Group>
+                  <Text size="sm" mt={6}>Server: {ban.ServerName || ban.ServerID}</Text>
+                  <Text size="xs" c="dimmed">Banned: {formatDateTime(ban.BannedAt)} · Expires: {formatDateTime(ban.ExpiresAt)}</Text>
+                </div>
+                <Badge variant="light">{ban.HitCount} hits</Badge>
+              </Group>
+            </Paper>
+          )) : <Text size="sm" c="dimmed">No active Fail2Ban bans.</Text>}
+          <Group justify="space-between" mt="md">
+            <Title order={5}>Tracked incidents</Title>
+            <Badge color={activeIncidents.length ? "red" : "gray"} variant="light">{activeIncidents.length}</Badge>
+          </Group>
+          <Text size="xs" c="dimmed">Incidents use the settings-defined monitoring window and are independent of the dashboard filters.</Text>
           {activeIncidents.length ? activeIncidents.slice(0, 8).map((incident) => (
             <Paper key={incident.id} radius="lg" p="md" className="shell-panel">
               <Group justify="space-between" align="start">

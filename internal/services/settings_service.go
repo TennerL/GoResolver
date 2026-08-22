@@ -253,6 +253,17 @@ func prepareSettingsValuesForSave(current, updates map[string]string) (map[strin
 		effective[key] = value
 	}
 	for key, value := range updates {
+		// An ordinary settings save must never erase or silently rotate an
+		// existing DNSSEC signing key. Key replacement requires a non-empty
+		// key; an accidentally blank/omitted field keeps the current value.
+		if key == "dns.dnssec_private_key_pem" && strings.TrimSpace(value) == "" && strings.TrimSpace(current[key]) != "" {
+			continue
+		}
+		if key == "dns.dnssec_private_key_pem" && strings.TrimSpace(value) != "" {
+			if _, err := deriveDNSSECPublicKey(value); err != nil {
+				return nil, fmt.Errorf("invalid DNSSEC private key: %w", err)
+			}
+		}
 		prepared[key] = value
 		effective[key] = value
 	}
