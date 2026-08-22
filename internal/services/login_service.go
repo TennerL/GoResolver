@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"golang.org/x/crypto/bcrypt"
 	"log"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +80,11 @@ func (s *LoginService) loginWait(username, ip string, now time.Time) time.Durati
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var until time.Time
-	for _, state := range []loginAttemptState{s.byIP[ip], s.byUser[strings.ToLower(username)]} {
+	states := []loginAttemptState{s.byUser[strings.ToLower(username)]}
+	if loginIPCanBeBlocked(ip) {
+		states = append(states, s.byIP[ip])
+	}
+	for _, state := range states {
 		candidate := state.NextTry
 		if state.BlockedUntil.After(candidate) {
 			candidate = state.BlockedUntil
@@ -96,13 +101,16 @@ func (s *LoginService) loginWait(username, ip string, now time.Time) time.Durati
 
 func (s *LoginService) recordLoginFailure(username, ip string, now time.Time, reason string) {
 	s.mu.Lock()
-	ipState := s.byIP[ip]
-	ipState.Failures++
-	ipState.NextTry = now.Add(loginCooldown)
-	if ipState.Failures >= loginIPMaxFailures {
-		ipState.BlockedUntil = now.Add(loginBlockDuration)
+	ipState := loginAttemptState{}
+	if loginIPCanBeBlocked(ip) {
+		ipState = s.byIP[ip]
+		ipState.Failures++
+		ipState.NextTry = now.Add(loginCooldown)
+		if ipState.Failures >= loginIPMaxFailures {
+			ipState.BlockedUntil = now.Add(loginBlockDuration)
+		}
+		s.byIP[ip] = ipState
 	}
-	s.byIP[ip] = ipState
 	userKey := strings.ToLower(username)
 	userState := s.byUser[userKey]
 	userState.Failures++
@@ -121,6 +129,11 @@ func (s *LoginService) recordLoginFailure(username, ip string, now time.Time, re
 			}
 		}()
 	}
+}
+
+func loginIPCanBeBlocked(raw string) bool {
+	ip := net.ParseIP(strings.Trim(strings.TrimSpace(raw), "[]"))
+	return ip != nil && !ip.IsLoopback() && !ip.IsUnspecified()
 }
 
 // Optional: some data for template rendering

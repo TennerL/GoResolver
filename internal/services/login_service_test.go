@@ -28,3 +28,15 @@ func TestLoginFailureAlwaysAddsMinuteCooldown(t *testing.T) {
 		t.Fatalf("cooldown = %s, want %s", wait, loginCooldown)
 	}
 }
+
+func TestLoopbackCanNeverBeIPBlocked(t *testing.T) {
+	svc := NewLoginService()
+	svc.notify = nil
+	now := time.Now()
+	for i := 0; i < loginIPMaxFailures+2; i++ {
+		svc.recordLoginFailure("user-"+string(rune('a'+i)), "127.0.0.1", now, "test")
+	}
+	if _, exists := svc.byIP["127.0.0.1"]; exists {
+		t.Fatal("loopback address must never be tracked as an IP ban target")
+	}
+}
