@@ -9,13 +9,28 @@ import (
 )
 
 type ServerHandler struct {
-	Service *services.ServerService
+	Service       *services.ServerService
+	ConfigService *services.ServerConfigurationService
 }
 
 func NewServerHandler() *ServerHandler {
 	return &ServerHandler{
-		Service: services.NewServerService(),
+		Service:       services.NewServerService(),
+		ConfigService: services.NewServerConfigurationService(),
 	}
+}
+
+func (h *ServerHandler) RedeployAll(w http.ResponseWriter, r *http.Request) {
+	result, err := h.ConfigService.RedeployAllNginxConfigs()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       len(result.Failed) == 0,
+		"deployed": result.Deployed,
+		"failed":   result.Failed,
+	})
 }
 
 func (h *ServerHandler) AddServer(w http.ResponseWriter, r *http.Request) {

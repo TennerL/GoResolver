@@ -1081,6 +1081,54 @@ func DeployNginxConfig(serverName string) error {
 	return testAndReloadNginx()
 }
 
+type NginxRedeployResult struct {
+	Deployed int      `json:"deployed"`
+	Failed   []string `json:"failed"`
+}
+
+func (s *ServerConfigurationService) RedeployAllNginxConfigs() (NginxRedeployResult, error) {
+	result := NginxRedeployResult{Failed: []string{}}
+	rows, err := db.DB.Query(`
+		SELECT DISTINCT server_name
+		FROM server_configuration
+		WHERE server_name <> '' AND server_name <> 'dummy'
+		ORDER BY server_name
+	`)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+
+	siteNames := make([]string, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return result, err
+		}
+		siteNames = append(siteNames, name)
+	}
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+	if err := rows.Close(); err != nil {
+		return result, err
+	}
+
+	if err := s.DeploySystemNginxConfig(); err != nil {
+		result.Failed = append(result.Failed, "system: "+err.Error())
+	} else {
+		result.Deployed++
+	}
+	for _, name := range siteNames {
+		if err := DeployNginxConfig(name); err != nil {
+			result.Failed = append(result.Failed, name+": "+err.Error())
+			continue
+		}
+		result.Deployed++
+	}
+	return result, nil
+}
+
 func testAndReloadNginx() error {
 	testCmd := exec.Command("nginx", "-t")
 	testOut, err := testCmd.CombinedOutput()
@@ -1552,7 +1600,7 @@ func (s *ServerConfigurationService) IssueCert(
 
 	config := lego.NewConfig(user)
 	config.CADirURL = lego.LEDirectoryProduction
-	config.Certificate.KeyType = certcrypto.RSA2048
+	config.Certificate.KeyType = certcrypto.EC256
 
 	client, err := lego.NewClient(config)
 	if err != nil {
@@ -1651,7 +1699,7 @@ func (s *ServerConfigurationService) RenewCert(siteID string) error {
 
 	config := lego.NewConfig(user)
 	config.CADirURL = lego.LEDirectoryProduction
-	config.Certificate.KeyType = certcrypto.RSA2048
+	config.Certificate.KeyType = certcrypto.EC256
 
 	client, err := lego.NewClient(config)
 	if err != nil {

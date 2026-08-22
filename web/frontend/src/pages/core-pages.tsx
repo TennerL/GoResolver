@@ -1,7 +1,7 @@
 import { ActionIcon, Alert, Badge, Button, Code, Container, Modal, NativeSelect, Paper, PasswordInput, SimpleGrid, Stack, Table, Tabs, Text, TextInput, Textarea, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { ActionForm, EmptyState, PageHeader, StatusBadge, useSPA } from "../common";
-import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconSearch, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
+import { ActionForm, EmptyState, PageHeader, StatusBadge, fetchJSON, useSPA } from "../common";
+import { IconAlertCircle, IconDatabase, IconEdit, IconPlus, IconRefresh, IconSearch, IconShieldLock, IconTrash, IconX } from "@tabler/icons-react";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 export function LoginPageView({ page }) {
@@ -149,10 +149,26 @@ export function RecordsPageView({ page }) {
 
 export function ServersPageView({ page }) {
   const [opened, { open, close }] = useDisclosure(false);
+  const [redeploying, setRedeploying] = useState(false);
   const servers = Array.isArray(page.Data) ? page.Data : [];
+  const redeployAll = async () => {
+    if (!window.confirm("Regenerate and redeploy every managed Nginx configuration? Each configuration will be validated before its reload.")) return;
+    setRedeploying(true);
+    try {
+      const result = await fetchJSON("/api/servers/redeploy-all", { method: "POST" });
+      const failures = Array.isArray(result.failed) ? result.failed : [];
+      window.alert(failures.length
+        ? `Redeployed ${result.deployed || 0} configurations. Failed:\n\n${failures.join("\n\n")}`
+        : `Successfully redeployed ${result.deployed || 0} configurations.`);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Redeploy failed");
+    } finally {
+      setRedeploying(false);
+    }
+  };
   return (
     <Container fluid>
-      <PageHeader title="Servers" description="Manage resolver targets, inspect reachability, and review observed uptime per server." actions={<Button leftSection={<IconPlus size={16} />} onClick={open}>Add Server</Button>} />
+      <PageHeader title="Servers" description="Manage resolver targets, inspect reachability, and review observed uptime per server." actions={<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => void redeployAll()} loading={redeploying}>Redeploy all</Button><Button leftSection={<IconPlus size={16} />} onClick={open}>Add Server</Button></div>} />
       <Paper radius="xl" p="md" className="soft-panel">
         {servers.length === 0 ? <EmptyState title="No servers connected" description="Add a server to configure VPN access, reverse proxy rules, and protection policies." /> : (
           <Table.ScrollContainer minWidth={980}>

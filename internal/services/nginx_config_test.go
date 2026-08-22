@@ -29,6 +29,30 @@ func TestRenderMainServerBlockAddsIPv6HTTPListener(t *testing.T) {
 	}
 }
 
+func TestRenderMainServerBlockUsesModernTLSAndSecurityHeaders(t *testing.T) {
+	site := models.ServerConfiguration{
+		ID: 7, Server_Name: "example.com", Server_Port: 443, SSL_Enabled: 1,
+		Proxy_Pass_Port: 8080, IP: "127.0.0.1", Cert_Path: "/tmp/cert.pem", Key_Path: "/tmp/key.pem",
+	}
+	block := renderMainServerBlock(site, []string{"example.com"}, defaultLetsEncryptConfigFile, models.DDoSPolicy{}, nil, false)
+	for _, expected := range []string{
+		"ssl_protocols TLSv1.2 TLSv1.3;",
+		"ssl_ciphers \"" + modernTLS12CipherSuite + "\";",
+		"ssl_prefer_server_ciphers on;",
+		"ssl_session_tickets off;",
+		"X-Content-Type-Options \"nosniff\" always;",
+		"X-Frame-Options \"SAMEORIGIN\" always;",
+		"Referrer-Policy \"strict-origin-when-cross-origin\" always;",
+	} {
+		if !strings.Contains(block, expected) {
+			t.Fatalf("expected %q in generated config:\n%s", expected, block)
+		}
+	}
+	if strings.Contains(block, "TLS_RSA_") || strings.Contains(block, "CBC") || strings.Contains(block, "ARIA") || strings.Contains(block, "CAMELLIA") {
+		t.Fatalf("generated cipher policy contains legacy suites:\n%s", block)
+	}
+}
+
 func TestRenderRedirectServerBlockPreservesACMEChallengeHandling(t *testing.T) {
 	site := models.ServerConfiguration{
 		ID:           11,

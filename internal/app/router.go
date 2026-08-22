@@ -49,6 +49,7 @@ func NewRouter() http.Handler {
 	r.HandleFunc("/records/{id}/delete", RequireAuth(records.Delete)).Methods("POST")
 
 	r.HandleFunc("/servers/new", RequireAuth(servers.AddServer)).Methods("POST")
+	r.HandleFunc("/api/servers/redeploy-all", RequireAuthAPI(servers.RedeployAll)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/delete", RequireAuth(servers.Delete)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/server_configuration", RequireAuth(serverconfiguration.HandlePost)).Methods("POST")
 	r.HandleFunc("/servers/{id:[0-9]+}/error-pages/upload", RequireAuth(serverconfiguration.UploadErrorPage)).Methods("POST")

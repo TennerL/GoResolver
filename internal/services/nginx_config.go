@@ -14,6 +14,8 @@ import (
 
 const defaultLetsEncryptConfigFile = "/etc/nginx/snippets/letsencrypt.conf"
 
+const modernTLS12CipherSuite = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+
 var errNoNginxSiteConfiguration = errors.New("no nginx site configuration")
 
 type nginxSiteBundle struct {
@@ -320,6 +322,7 @@ func renderMainServerBlock(
 	b.WriteString(" set $gr_ray_id \"GR-$request_id\";\n")
 	b.WriteString(" add_header X-Ray-ID $gr_ray_id always;\n")
 	b.WriteString(" add_header Content-Security-Policy \"upgrade-insecure-requests\" always;\n")
+	b.WriteString(renderBaselineSecurityHeaders())
 
 	if site.SSL_Enabled == 1 && site.HSTS == 1 {
 		b.WriteString(" add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;\n")
@@ -328,6 +331,7 @@ func renderMainServerBlock(
 	if site.SSL_Enabled == 1 {
 		fmt.Fprintf(&b, " ssl_certificate %s;\n", site.Cert_Path)
 		fmt.Fprintf(&b, " ssl_certificate_key %s;\n", site.Key_Path)
+		b.WriteString(renderModernTLSDirectives())
 	}
 
 	fmt.Fprintf(&b, " include %s;\n", includePath)
@@ -402,6 +406,21 @@ func renderMainServerBlock(
 
 	b.WriteString("}\n")
 	return b.String()
+}
+
+func renderModernTLSDirectives() string {
+	return " ssl_protocols TLSv1.2 TLSv1.3;\n" +
+		" ssl_ciphers \"" + modernTLS12CipherSuite + "\";\n" +
+		" ssl_prefer_server_ciphers on;\n" +
+		" ssl_session_timeout 1d;\n" +
+		" ssl_session_tickets off;\n"
+}
+
+func renderBaselineSecurityHeaders() string {
+	return " add_header X-Content-Type-Options \"nosniff\" always;\n" +
+		" add_header X-Frame-Options \"SAMEORIGIN\" always;\n" +
+		" add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;\n" +
+		" add_header Permissions-Policy \"camera=(), microphone=(), geolocation=()\" always;\n"
 }
 
 func renderRedirectServerBlock(site models.ServerConfiguration, serverNames []string, includePath string) string {

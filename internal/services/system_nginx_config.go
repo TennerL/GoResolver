@@ -236,6 +236,7 @@ func renderSystemNginxSite(site models.SystemNginxSite, policy models.DDoSPolicy
 			fmt.Fprintf(&b, " ssl_dhparam %s;\n", site.SSLDhParamPath)
 		}
 	}
+	b.WriteString(renderBaselineSecurityHeaders())
 
 	if site.RootPath != "" {
 		fmt.Fprintf(&b, " root %s;\n", site.RootPath)
