@@ -71,7 +71,7 @@ var settingsDefinitions = []SettingDefinition{
 	{Key: "abuseipdb.risk_threshold", Label: "AbuseIPDB risk threshold", Group: "Security", Help: "Minimum score to classify as suspicious", Default: "50"},
 	{Key: "abuseipdb.max_age_days", Label: "AbuseIPDB max age days", Group: "Security", Help: "Max age of reports when querying AbuseIPDB", Default: "90"},
 	{Key: "abuseipdb.cache_ttl_hours", Label: "AbuseIPDB cache TTL (hours)", Group: "Security", Help: "How long to cache reputation lookups", Default: "24"},
-	{Key: "security.fail2ban_interval_seconds", Label: "Fail2Ban interval (seconds)", Group: "Security", Help: "How often Fail2Ban scans logs", Default: "30"},
+	{Key: "security.fail2ban_interval_seconds", Label: "Fail2Ban interval (seconds)", Group: "Security", Help: "How often Fail2Ban scans logs", Default: "5"},
 	{Key: "analytics.retention_days", Label: "Analytics retention (days)", Group: "Analytics", Help: "Delete access log entries older than this many days", Default: "30"},
 	{Key: "analytics.alert.error_rate_percent", Label: "Analytics error-rate alert (%)", Group: "Analytics", Help: "Trigger alert when 4xx/5xx share reaches this percentage", Default: "20"},
 	{Key: "analytics.alert.avg_request_time_ms", Label: "Analytics latency alert (ms)", Group: "Analytics", Help: "Trigger alert when average request time reaches this threshold", Default: "800"},

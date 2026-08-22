@@ -749,16 +749,17 @@ func (s *ServerConfigurationService) GetServerErrorPages(serverID string) []mode
 }
 
 func (s *ServerConfigurationService) GetServerErrorFiles() []models.ServerErrorFiles {
+	defaultPath := NewSettingsService().GetValue("paths.error_pages")
 	rows, err := db.DB.Query(`
 		SELECT  id,
 				error_code,
 				response_type,
 				filename,
 				file,
-				path
+				COALESCE(NULLIF(path, ''), ?)
 		FROM error_page_files 
 		ORDER BY updated_at
-	`)
+	`, defaultPath)
 	if err != nil {
 		log.Println("SELECT error_page_files failed:", err)
 		return nil
@@ -891,13 +892,14 @@ func (s *ServerConfigurationService) UploadErrorPage(ef models.ServerErrorFiles)
 		INSERT INTO error_page_files (
 			id, 
 			error_code, response_type,
-			filename, file 
-		) VALUES (UUID(), ?, ?, ?, ?)
+			filename, file, path
+		) VALUES (UUID(), ?, ?, ?, ?, ?)
 	`,
 		normalizedCodes,
 		ef.ResponseType,
 		ef.Filename,
 		ef.File,
+		ef.Path,
 	)
 	if err != nil {
 		log.Println("INSERT error_page failed:", err)

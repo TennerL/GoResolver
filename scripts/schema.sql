@@ -154,8 +154,8 @@ CREATE TABLE IF NOT EXISTS ddos_overrides (
 CREATE TABLE IF NOT EXISTS fail2ban_policies (
     server_id INT PRIMARY KEY,
     enabled TINYINT(1) NOT NULL DEFAULT 0,
-    max_retry INT NOT NULL DEFAULT 10,
-    find_time_seconds INT NOT NULL DEFAULT 600,
+    max_retry INT NOT NULL DEFAULT 5,
+    find_time_seconds INT NOT NULL DEFAULT 300,
     ban_time_seconds INT NOT NULL DEFAULT 3600,
     status_codes VARCHAR(128) NOT NULL DEFAULT '403',
     ignore_ips TEXT,

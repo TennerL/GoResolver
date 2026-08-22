@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 
@@ -27,7 +28,11 @@ func (h *LoginHandler) Index(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
-	auth := h.Service.Authenticate(username, password)
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	auth := h.Service.Authenticate(username, password, ip)
 	if !auth.Success {
 		http.Redirect(w, r, "/login?error="+url.QueryEscape(auth.Error), http.StatusSeeOther)
 		return

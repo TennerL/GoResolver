@@ -215,7 +215,7 @@ func FilterRulesForServer(rules []models.IPTablesRule, serverID string, serverIP
 	}
 
 	for _, r := range rules {
-		if ipSet[r.Source] || ipSet[r.Destination] || isServerRule(r.Extra, serverID) || isGeneralGoResolverRule(r.Extra) {
+		if ipSet[r.Source] || ipSet[r.Destination] || isServerRule(r.Extra, serverID) || (serverID == "0" && isGeneralGoResolverRule(r.Extra)) {
 			filtered = append(filtered, r)
 		}
 	}

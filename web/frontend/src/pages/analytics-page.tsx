@@ -1,6 +1,6 @@
-import { Accordion, Badge, Button, Checkbox, Code, Container, Grid, Group, Modal, NativeSelect, Paper, SimpleGrid, Stack, Table, Text, TextInput, Title } from "@mantine/core";
+import { Accordion, Badge, Button, Checkbox, Code, Container, Grid, Group, Modal, NativeSelect, Pagination, Paper, SimpleGrid, Stack, Table, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { IconAdjustmentsHorizontal, IconAlertTriangle, IconMapPin, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
+import { IconAdjustmentsHorizontal, IconBell, IconMapPin, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChartCard, MapCard, PageHeader, StatusBadge, buildLineOption, buildRankingOption, buildStatusOption, buildTopUrisOption, fetchJSON } from "../common";
 
@@ -42,6 +42,8 @@ const emptyLogSearch = {
   limit: 50,
   offset: 0
 };
+
+const logPageSize = 50;
 
 const quickRangeOptions = [
   { value: "15", label: "Last 15 minutes" },
@@ -217,29 +219,6 @@ function SummaryCard({ label, value, hint }) {
   );
 }
 
-function AlertCard({ alert }) {
-  const color = alert.severity === "high" ? "blue" : alert.severity === "medium" ? "cyan" : "gray";
-  const tone = alert.severity === "high" ? "strong signal" : alert.severity === "medium" ? "moderate signal" : "context";
-  return (
-    <Paper radius="xl" p="lg" className="soft-panel">
-      <Stack gap="sm">
-        <Group justify="space-between" align="start">
-          <div>
-            <Text size="sm" c="dimmed">{alert.title}</Text>
-            <Title order={4}>{alert.value}</Title>
-          </div>
-          <Badge color={color} variant="light">{tone}</Badge>
-        </Group>
-        <Text size="sm">{alert.summary}</Text>
-        <Text size="xs" c="dimmed">Threshold: {alert.threshold}</Text>
-        <Text size="xs" c="dimmed">
-          Hosts: {alert.context?.hosts?.length ? alert.context.hosts.join(", ") : "-"}
-        </Text>
-      </Stack>
-    </Paper>
-  );
-}
-
 function CountList({ title, items }) {
   return (
     <Paper radius="xl" p="lg" className="soft-panel">
@@ -261,6 +240,7 @@ function CountList({ title, items }) {
 export function AnalyticsPageView() {
   const [filterOpened, filterModal] = useDisclosure(false);
   const [profileOpened, profileModal] = useDisclosure(false);
+  const [notificationsOpened, notificationsModal] = useDisclosure(false);
   const [draftFilters, setDraftFilters] = useState(defaultFilters);
   const [filters, setFilters] = useState(defaultFilters);
   const [quickSearch, setQuickSearch] = useState("");
@@ -273,6 +253,7 @@ export function AnalyticsPageView() {
   const [ips, setIps] = useState([]);
   const [points, setPoints] = useState([]);
   const [logs, setLogs] = useState(emptyLogSearch);
+  const [logPage, setLogPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [lastLoadedAt, setLastLoadedAt] = useState("");
   const [profileLoading, setProfileLoading] = useState(false);
@@ -353,7 +334,8 @@ export function AnalyticsPageView() {
 
   useEffect(() => {
     setQuickSearch(filters.q);
-  }, [filters.q]);
+    setLogPage(1);
+  }, [filters]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -391,7 +373,6 @@ export function AnalyticsPageView() {
     const controller = new AbortController();
 
     async function loadEverything() {
-      if (inFlightRef.current) return;
       inFlightRef.current = true;
       setLoading(true);
       try {
@@ -401,7 +382,7 @@ export function AnalyticsPageView() {
           fetchJSON(buildGeoUrl(filters), { signal: controller.signal }),
           fetchJSON(buildAlertsUrl(filters), { signal: controller.signal }),
           fetchJSON(buildIncidentsUrl(), { signal: controller.signal }),
-          fetchJSON(buildLogsUrl(filters, 50, 0), { signal: controller.signal })
+          fetchJSON(buildLogsUrl(filters, logPageSize, (logPage - 1) * logPageSize), { signal: controller.signal })
         ]);
 
         if (cancelled) return;
@@ -430,7 +411,7 @@ export function AnalyticsPageView() {
       cancelled = true;
       controller.abort();
     };
-  }, [filters, reloadToken]);
+  }, [filters, logPage, reloadToken]);
 
   useEffect(() => {
     const intervalMs = Number(refreshInterval);
@@ -452,13 +433,12 @@ export function AnalyticsPageView() {
         description="Alerts, searchable logs, longer retention controls, and IP drill-downs for incident handling."
         actions={
           <Group gap="sm">
-            <TextInput
-              w={260}
-              placeholder="Quick search: IP, ISP, host, URI"
-              value={quickSearch}
-              onChange={(event) => setQuickSearch(event.currentTarget.value)}
-              leftSection={<IconSearch size={16} />}
-            />
+            <Button variant="subtle" color="gray" px="sm" onClick={notificationsModal.open} aria-label={`Open notification center (${activeIncidents.length} open)`}>
+              <Group gap={6} wrap="nowrap">
+                <IconBell size={18} />
+                {activeIncidents.length ? <Badge color="red" variant="filled" size="sm" circle>{activeIncidents.length}</Badge> : null}
+              </Group>
+            </Button>
             <NativeSelect data={refreshIntervalOptions} value={refreshInterval} onChange={(event) => setRefreshInterval(event.currentTarget.value)} />
             <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => setReloadToken((value) => value + 1)} loading={loading}>
               Refresh
@@ -492,82 +472,6 @@ export function AnalyticsPageView() {
         <SummaryCard label="Transferred" value={formatBytes(analytics.summary.transferred_bytes)} hint="Response bytes served for the current slice" />
       </SimpleGrid>
 
-      <Paper radius="xl" p="lg" className="soft-panel" mb="lg">
-        <Group justify="space-between" mb="md">
-          <div>
-            <Title order={4}>Current slice findings</Title>
-            <Text size="sm" c="dimmed">Derived from error rate, latency, traffic spikes, and suspicious IP activity in the current analytics slice. These findings do not create incidents or send mail on their own.</Text>
-          </div>
-          <Badge variant="light" color={observability.alerts.length ? "blue" : "gray"} leftSection={<IconAlertTriangle size={12} />}>
-            {observability.alerts.length || 0}
-          </Badge>
-        </Group>
-        <SimpleGrid cols={{ base: 1, md: 2, xl: 4 }} spacing="lg">
-          {observability.alerts.length
-            ? observability.alerts.map((alert) => <AlertCard key={alert.id} alert={alert} />)
-            : <Paper radius="xl" p="lg" className="shell-panel"><Text c="dimmed">No notable findings for the current slice.</Text></Paper>}
-        </SimpleGrid>
-        <Stack gap="sm" mt="lg">
-          <Group justify="space-between">
-            <div>
-              <Title order={5}>Tracked incidents</Title>
-              <Text size="sm" c="dimmed">This section uses the settings-defined monitoring window, is not affected by dashboard filter changes, and is the only one tied to incident tracking and notifications.</Text>
-            </div>
-            <Badge variant="light">{activeIncidents.length}</Badge>
-          </Group>
-          {activeIncidents.length ? activeIncidents.slice(0, 8).map((incident) => (
-            <Paper key={incident.id} radius="lg" p="md" className="shell-panel">
-              <Group justify="space-between" align="start">
-                <div>
-                  <Text fw={600}>{incident.title}</Text>
-                  <Text size="sm" c="dimmed">{incident.summary}</Text>
-                  <Text size="xs" c="dimmed">Status: {incident.status} · First seen: {formatDateTime(incident.first_seen)} · Last seen: {formatDateTime(incident.last_seen)}</Text>
-                </div>
-                <Group gap="xs">
-                  <Badge variant="light">{incident.value}</Badge>
-                  <Badge color={incident.status === "open" ? "red" : "gray"} variant="light">{incident.status}</Badge>
-                  <Button size="xs" variant="light" color="gray" onClick={() => void dismissIncident(incident)}>
-                    Dismiss
-                  </Button>
-                </Group>
-              </Group>
-            </Paper>
-          )) : <Text size="sm" c="dimmed">{incidentHistory.length ? "No open incidents. Recent items are available in history below." : "No tracked incidents yet."}</Text>}
-          <Accordion variant="separated" radius="lg" mt="md">
-            <Accordion.Item value="incident-history">
-              <Accordion.Control>
-                <Group justify="space-between" wrap="nowrap" mr="sm">
-                  <Title order={5}>History</Title>
-                  <Badge variant="light">{incidentHistory.length}</Badge>
-                </Group>
-              </Accordion.Control>
-              <Accordion.Panel>
-                <Stack gap="sm">
-                  {incidentHistory.length ? incidentHistory.map((incident) => (
-                    <Paper key={`history-${incident.id}`} radius="lg" p="md" className="shell-panel">
-                      <Group justify="space-between" align="start">
-                        <div>
-                          <Text fw={600}>{incident.title}</Text>
-                          <Text size="sm" c="dimmed">{incident.summary}</Text>
-                          <Text size="xs" c="dimmed">Status: {incident.status} · First seen: {formatDateTime(incident.first_seen)} · Last seen: {formatDateTime(incident.last_seen)}</Text>
-                        </div>
-                        <Group gap="xs">
-                          <Badge variant="light">{incident.value}</Badge>
-                          <Badge color={incident.status === "dismissed" ? "gray" : "blue"} variant="light">{incident.status}</Badge>
-                          <Button size="xs" variant="light" color="red" leftSection={<IconTrash size={14} />} onClick={() => void deleteHistoryIncident(incident)}>
-                            Delete
-                          </Button>
-                        </Group>
-                      </Group>
-                    </Paper>
-                  )) : <Text size="sm" c="dimmed">No dismissed or resolved incidents yet.</Text>}
-                </Stack>
-              </Accordion.Panel>
-            </Accordion.Item>
-          </Accordion>
-        </Stack>
-      </Paper>
-
       <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="lg">
         <ChartCard title="Requests over time" option={buildLineOption(analytics.requests_over_time, "#ff6d4d")} />
         <ChartCard title="Status codes" option={buildStatusOption(analytics.status_codes)} />
@@ -593,12 +497,22 @@ export function AnalyticsPageView() {
       </Grid>
 
       <Paper radius="xl" p="lg" className="soft-panel" mt="lg">
-        <Group justify="space-between" mb="md">
+        <Group justify="space-between" align="end" mb="md">
           <div>
             <Title order={4}>Log search</Title>
             <Text size="sm" c="dimmed">Search the current slice by URI, IP, ISP, host, method, verdict, and time range.</Text>
           </div>
-          <Badge variant="light">{logs.total || 0} matches</Badge>
+          <Group align="end">
+            <TextInput
+              w={300}
+              label="Quick filter"
+              placeholder="IP, ISP, host, method or URI"
+              value={quickSearch}
+              onChange={(event) => setQuickSearch(event.currentTarget.value)}
+              leftSection={<IconSearch size={16} />}
+            />
+            <Badge variant="light" mb={8}>{logs.total || 0} matches</Badge>
+          </Group>
         </Group>
         {logs.items?.length ? (
           <Table.ScrollContainer minWidth={1080}>
@@ -640,7 +554,70 @@ export function AnalyticsPageView() {
             </Table>
           </Table.ScrollContainer>
         ) : <Text c="dimmed">No log entries found for the current filter.</Text>}
+        {logs.total > logPageSize ? (
+          <Group justify="space-between" mt="lg">
+            <Text size="sm" c="dimmed">
+              {logs.offset + 1}–{Math.min(logs.offset + logs.items.length, logs.total)} of {logs.total} requests
+            </Text>
+            <Pagination value={logPage} onChange={setLogPage} total={Math.ceil(logs.total / logPageSize)} withEdges />
+          </Group>
+        ) : null}
       </Paper>
+
+      <Modal opened={notificationsOpened} onClose={notificationsModal.close} title="Notification center" size="xl" centered>
+        <Stack gap="sm">
+          <Group justify="space-between">
+            <Text size="sm" c="dimmed">Tracked incidents use the settings-defined monitoring window and are independent of the dashboard filters.</Text>
+            <Badge color={activeIncidents.length ? "red" : "gray"} variant="light">{activeIncidents.length} open</Badge>
+          </Group>
+          {activeIncidents.length ? activeIncidents.slice(0, 8).map((incident) => (
+            <Paper key={incident.id} radius="lg" p="md" className="shell-panel">
+              <Group justify="space-between" align="start">
+                <div>
+                  <Text fw={600}>{incident.title}</Text>
+                  <Text size="sm" c="dimmed">{incident.summary}</Text>
+                  <Text size="xs" c="dimmed">Status: {incident.status} · First seen: {formatDateTime(incident.first_seen)} · Last seen: {formatDateTime(incident.last_seen)}</Text>
+                </div>
+                <Group gap="xs">
+                  <Badge variant="light">{incident.value}</Badge>
+                  <Badge color="red" variant="light">{incident.status}</Badge>
+                  <Button size="xs" variant="light" color="gray" onClick={() => void dismissIncident(incident)}>Dismiss</Button>
+                </Group>
+              </Group>
+            </Paper>
+          )) : <Text size="sm" c="dimmed">{incidentHistory.length ? "No open incidents. Recent items are available in history below." : "No tracked incidents yet."}</Text>}
+          <Accordion variant="separated" radius="lg" mt="md">
+            <Accordion.Item value="incident-history">
+              <Accordion.Control>
+                <Group justify="space-between" wrap="nowrap" mr="sm">
+                  <Title order={5}>History</Title>
+                  <Badge variant="light">{incidentHistory.length}</Badge>
+                </Group>
+              </Accordion.Control>
+              <Accordion.Panel>
+                <Stack gap="sm">
+                  {incidentHistory.length ? incidentHistory.map((incident) => (
+                    <Paper key={`history-${incident.id}`} radius="lg" p="md" className="shell-panel">
+                      <Group justify="space-between" align="start">
+                        <div>
+                          <Text fw={600}>{incident.title}</Text>
+                          <Text size="sm" c="dimmed">{incident.summary}</Text>
+                          <Text size="xs" c="dimmed">Status: {incident.status} · First seen: {formatDateTime(incident.first_seen)} · Last seen: {formatDateTime(incident.last_seen)}</Text>
+                        </div>
+                        <Group gap="xs">
+                          <Badge variant="light">{incident.value}</Badge>
+                          <Badge color={incident.status === "dismissed" ? "gray" : "blue"} variant="light">{incident.status}</Badge>
+                          <Button size="xs" variant="light" color="red" leftSection={<IconTrash size={14} />} onClick={() => void deleteHistoryIncident(incident)}>Delete</Button>
+                        </Group>
+                      </Group>
+                    </Paper>
+                  )) : <Text size="sm" c="dimmed">No dismissed or resolved incidents yet.</Text>}
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
+        </Stack>
+      </Modal>
 
       <Modal opened={filterOpened} onClose={filterModal.close} title="Analytics filters" size="lg" centered>
         <Stack gap="md">
